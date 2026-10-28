@@ -44,11 +44,15 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     px: Math.max(2, Math.min(6, Math.round(short / 120))),
     color: seedColor(first.dayColor, first.nightColor),
     nibble: false,
+    // The digits are far too big to bounce under a gecko's feet.
+    jostle: false,
     sleepAfterMs: Infinity,
     reducedMotion: win.matchMedia('(prefers-reduced-motion: reduce)').matches,
     maxFps: 30,
     critters: { fly: { enabled: true, pace: 'normal' }, cricket: { enabled: false, pace: 'normal' } },
     mischief: false,
+    // ?petdebug in the address shows its terrain, route and home.
+    debug: new URLSearchParams(win.location.search).has('petdebug'),
   };
 
   let scene = first;

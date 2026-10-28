@@ -58,6 +58,14 @@ const TEXT_Z = 4;
 const HEADING_Z = 5;
 /** Where the words are: the editor and reading view. */
 const TEXT_ROOTS = '.cm-content, .markdown-preview-view';
+/**
+ * Text roots marked with this attribute are terrain in the shape of their letters, not the
+ * boxes of their lines: for very large type (a clock face) the gecko climbs onto a digit
+ * only where there is ink, and walks through the gaps and counters between.
+ */
+const GLYPH_ATTR = 'data-pet-glyphs';
+/** Ink coverage (0–255) at which an art pixel counts as part of a letter. */
+const GLYPH_INK = 110;
 /** Bounds on the text scan, which runs twice a second. */
 const MAX_TEXT_NODES = 1500;
 const MAX_TEXT_RECTS = 800;
@@ -85,7 +93,7 @@ export class World {
   /** The open side panels: safe high ground to run to. */
   sidebars: Rect[] = [];
   /** Blocks of text on screen (paragraphs, headings, list runs). */
-  text: Rect[] = [];
+  text: (Rect & { glyph?: true })[] = [];
   /** High spots worth climbing up to and sitting on: tabs and headings. */
   perches: Rect[] = [];
   /** Height of the terrain at each art pixel of the window. */
@@ -100,6 +108,9 @@ export class World {
   shifts: Rect[] = [];
 
   private prevSignature = new Map<string, Rect>();
+  /** Letter shapes of glyph-terrain text, one alpha byte per art pixel of the window; null when there is none. */
+  private glyphInk: Uint8ClampedArray | null = null;
+  private glyphCanvas: HTMLCanvasElement | null = null;
 
   constructor(private win: Window) {}
 
@@ -229,7 +240,9 @@ export class World {
   /** Merge the line boxes of visible text into paragraph-sized blocks. Returns the blocks with their heights, in art px. */
   private scanText(): (Rect & { z: number })[] {
     const doc = this.win.document, vh = this.win.innerHeight;
-    const roots = Array.from(doc.querySelectorAll<HTMLElement>(TEXT_ROOTS)).filter((r) => !r.parentElement?.closest(TEXT_ROOTS));
+    const all = Array.from(doc.querySelectorAll<HTMLElement>(TEXT_ROOTS)).filter((r) => !r.parentElement?.closest(TEXT_ROOTS));
+    const roots = all.filter((r) => !r.hasAttribute(GLYPH_ATTR));
+    const glyphs = this.scanGlyphs(all.filter((r) => r.hasAttribute(GLYPH_ATTR)));
     const range = doc.createRange();
     const lines: Rect[] = [];
     let nodes = 0;
@@ -255,7 +268,7 @@ export class World {
       const x2 = Math.max(b.x + b.w, r.x + r.w), y2 = Math.max(b.y + b.h, r.y + r.h);
       b.x = Math.min(b.x, r.x); b.y = Math.min(b.y, r.y); b.w = x2 - b.x; b.h = y2 - b.y;
     }
-    this.text = blocks.map((b) => this.toArt(b)).filter((b) => !this.coverAt(b.x + b.w / 2, b.y + b.h / 2));
+    this.text = [...blocks.map((b) => this.toArt(b)), ...glyphs].filter((b) => !this.coverAt(b.x + b.w / 2, b.y + b.h / 2));
     // A block whose lines are much taller than most is a heading.
     const sorted = lines.map((l) => l.h).sort((a, b) => a - b);
     const typical = sorted[Math.floor(sorted.length / 2)] ?? 0;
@@ -291,7 +304,75 @@ export class World {
       fill(m, m.z);
       if (m.z === HEADING_Z && m.w > 12) perches.push(m);
     }
+    const ink = this.glyphInk;
+    if (ink && ink.length === w * h * 4) {
+      for (let k = 0; k < w * h; k++) if (ink[k * 4 + 3] >= GLYPH_INK && this.heights[k] < HEADING_Z) this.heights[k] = HEADING_Z;
+    }
+    for (const g of this.text) if (g.glyph && g.w > 12 && g.h > 12) perches.push(g);
     this.perches = perches;
+  }
+
+  /**
+   * Draw the text of glyph-terrain roots into an art-pixel canvas, in their own font, to get
+   * the shapes of the letters. Returns each letter's ink box (art px) for the text list.
+   */
+  private scanGlyphs(roots: HTMLElement[]): (Rect & { glyph: true })[] {
+    if (!roots.length) { this.glyphInk = null; return []; }
+    const doc = this.win.document, p = this.px;
+    const w = Math.ceil(this.win.innerWidth / p), h = Math.ceil(this.win.innerHeight / p);
+    const canvas = (this.glyphCanvas ??= doc.createElement('canvas'));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) { this.glyphInk = null; return []; }
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#000';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    const range = doc.createRange();
+    const spans: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    for (const root of roots) {
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const text = n.nodeValue ?? '';
+        if (!text.trim() || !n.parentElement) continue;
+        range.selectNodeContents(n);
+        const line = range.getClientRects()[0];
+        if (!line || line.width < 2) continue;
+        const cs = getComputedStyle(n.parentElement);
+        ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${parseFloat(cs.fontSize) / p}px ${cs.fontFamily}`;
+        (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = `${(parseFloat(cs.letterSpacing) || 0) / p}px`;
+        const m = ctx.measureText(text);
+        // The baseline sits half the leading plus the font's ascent below the line box's top.
+        const asc = m.fontBoundingBoxAscent, desc = m.fontBoundingBoxDescent;
+        const baseline = line.top / p + (line.height / p - (asc + desc)) / 2 + asc;
+        ctx.fillText(text, line.left / p, baseline);
+        for (let i = 0; i < text.length; i++) {
+          if (!text[i].trim()) continue;
+          range.setStart(n, i);
+          range.setEnd(n, i + 1);
+          const r = range.getBoundingClientRect();
+          if (r.width > 0) spans.push({ x0: r.left / p, x1: r.right / p, y0: r.top / p, y1: r.bottom / p });
+        }
+      }
+    }
+    const ink = ctx.getImageData(0, 0, w, h).data;
+    this.glyphInk = ink;
+    // Each letter's box is where its column span actually has ink.
+    const out: (Rect & { glyph: true })[] = [];
+    for (const s of spans) {
+      let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
+      const xa = Math.max(0, Math.floor(s.x0)), xb = Math.min(w, Math.ceil(s.x1));
+      const ya = Math.max(0, Math.floor(s.y0)), yb = Math.min(h, Math.ceil(s.y1));
+      for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
+        if (ink[(y * w + x) * 4 + 3] < GLYPH_INK) continue;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+      if (bottom >= top) out.push({ x: left, y: top, w: right - left + 1, h: bottom - top + 1, glyph: true });
+    }
+    return out;
   }
 
   /** Terrain height at (x, y). */

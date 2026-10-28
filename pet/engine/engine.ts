@@ -30,6 +30,8 @@ export interface PetOptions extends BrainOptions {
   pranks?: Pranks;
   /** Something worth putting in its diary happened. */
   onDiary?: (kind: DiaryKind, text: string) => void;
+  /** Letters dip and bounce under its feet (default on). Off for very large text. */
+  jostle?: boolean;
   /** Pay no attention to the pointer or touches (it is asleep for the night). */
   ignorePointer?: boolean;
   /** Double-tapped on a touch screen: show its menu here (CSS px). */
@@ -369,7 +371,7 @@ export class PetEngine {
       // The letter under the foot as it is drawn (lifted with the surface it stands on).
       const z = this.world.groundAt(f.x, f.y);
       const q = b.project(f.x, f.y, z);
-      this.reactions.step(q.x * px, q.y * px, Math.cos(b.heading), Math.sin(b.heading), strength);
+      if (this.opts.jostle !== false) this.reactions.step(q.x * px, q.y * px, Math.cos(b.heading), Math.sin(b.heading), strength);
       // Stepping in the text inks the foot; off it, an inked foot leaves a print.
       const ink = z === 4 || z === 5 ? this.prints.textColourAt(q.x * px, q.y * px) : null;
       if (ink) this.prints.dip(f.leg, ink);
@@ -381,7 +383,7 @@ export class PetEngine {
   /** Dropped from a height: everything under it bounces. */
   private splash() {
     const b = this.body, px = this.opts.px;
-    if (this.opts.reducedMotion) return;
+    if (this.opts.reducedMotion || this.opts.jostle === false) return;
     const pts = [...[4, 8, 11, 14, 17, 20].map((i) => b.pts[i]), ...b.legs.map((l) => l.foot)];
     this.reactions.splash(pts.map((p) => ({ x: p.x * px, y: p.y * px })), b.pts[12].x * px, b.pts[12].y * px);
   }
@@ -589,6 +591,10 @@ export class PetEngine {
       g.fillRect(Math.floor(br.destX), Math.floor(br.destY), 2, 2);
       g.fillStyle = 'rgba(0,140,255,0.8)';
       g.fillRect(Math.floor(br.homeX) - 1, Math.floor(br.homeY) - 1, 3, 3);
+      // The terrain: anything raised above the ground (text, panels).
+      g.fillStyle = 'rgba(255,0,200,0.35)';
+      const W = Math.ceil(this.win.innerWidth / this.opts.px), H = Math.ceil(this.win.innerHeight / this.opts.px);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (this.world.groundAt(x, y) >= 4) g.fillRect(x, y, 1, 1);
       g.fillStyle = 'rgba(0,160,90,0.25)';
       for (const e of this.world.edges) {
         const n = Math.ceil(e.len / 4);
