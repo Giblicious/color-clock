@@ -1,7 +1,7 @@
 import { PetEngine, PetOptions } from './engine/engine';
 
 /**
- * The pet on the color clock. The display's own elements are its terrain: the clock and
+ * The pet on the color clock, built on the Pixel Pet engine (MIT; see engine/LICENSE). The display's own elements are its terrain: the clock and
  * label are text it climbs over (letters dip under its feet), and the reminder pill is a
  * stone to nap on.
  *

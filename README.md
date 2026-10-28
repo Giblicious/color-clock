@@ -68,3 +68,7 @@ npm install
 npm run check              # typecheck, syntax checks and tests
 npm run pet:build          # rebuild public/pet.js after changing pet/
 ```
+
+## Credits
+
+The gecko is adapted from [Pixel Pet](https://github.com/spreadwell/pixel-pet) by Spreadwell, used under the MIT License. Its engine and license are in `pet/engine/`.

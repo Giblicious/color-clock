@@ -9,7 +9,7 @@
     "test": "node --test test/*.test.js",
     "android:build": "node tools/android-release.mjs --build-only",
     "android:release": "node tools/android-release.mjs --bump",
-    "pet:build": "esbuild pet/clock.ts --bundle --format=esm --target=es2020 --minify --legal-comments=none --outfile=public/pet.js",
+    "pet:build": "esbuild pet/clock.ts --bundle --format=esm --target=es2020 --minify --legal-comments=none \"--banner:js=/*! Gecko engine adapted from Pixel Pet (https://github.com/spreadwell/pixel-pet). Copyright (c) 2026 Spreadwell. MIT License: see pet/engine/LICENSE. */\" --outfile=public/pet.js",
     "pet:typecheck": "tsc -p pet"
   },
   "engines": {
