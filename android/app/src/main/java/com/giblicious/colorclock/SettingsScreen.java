@@ -56,6 +56,10 @@ final class SettingsScreen {
     private View view;
     private Settings draft;
     private boolean childLock;
+    /** Left open and untouched this long, settings close without saving (ms). */
+    private static final long IDLE_MS = 120_000;
+    private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable giveUp = this::close;
 
     SettingsScreen(Activity activity, FrameLayout root, Host host) {
         this.activity = activity;
@@ -92,12 +96,20 @@ final class SettingsScreen {
         bindLock();
         bindDevice();
         showTab(0);
+        touched();
+    }
+
+    /** Any touch while open: it stays open another two minutes. */
+    void touched() {
+        idle.removeCallbacks(giveUp);
+        if (view != null) idle.postDelayed(giveUp, IDLE_MS);
     }
 
     void close() {
         if (view == null) return;
         View closing = view;
         view = null;
+        idle.removeCallbacks(giveUp);
         hideKeyboard(closing);
         closing.animate().alpha(0f).setDuration(180).withEndAction(() -> root.removeView(closing));
         host.closed();

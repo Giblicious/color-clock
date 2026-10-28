@@ -5,7 +5,6 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
@@ -22,6 +21,9 @@ import java.security.SecureRandom;
  * The child-lock gate: a fresh 4-digit code spelled out in words ("Five Two Eight Zero") that a
  * grown-up types on the keypad. Nothing to remember, but a child who can't read can't pass it.
  * Laid out for landscape: code on the left, keypad on the right.
+ *
+ * A child who stumbles in here is sent back to the clock: after three wrong codes, or ten
+ * seconds without a key pressed.
  */
 final class UnlockChallenge extends FrameLayout {
     interface Listener {
@@ -32,8 +34,7 @@ final class UnlockChallenge extends FrameLayout {
     static final String[] WORDS = {"Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"};
     private static final int LENGTH = 4;
     private static final int MAX_ATTEMPTS = 3;
-    private static final long LOCKOUT_MS = 30_000;
-    private static long lockedUntil;
+    private static final long IDLE_MS = 10_000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final SecureRandom random = new SecureRandom();
@@ -45,6 +46,7 @@ final class UnlockChallenge extends FrameLayout {
     private final StringBuilder entry = new StringBuilder();
     private String code;
     private int failedAttempts;
+    private final Runnable giveUp = () -> close();
 
     UnlockChallenge(Context context, Listener listener) {
         super(context);
@@ -89,7 +91,7 @@ final class UnlockChallenge extends FrameLayout {
         cancel.setText("Cancel");
         cancel.setBackgroundResource(R.drawable.bg_button_ghost);
         cancel.setTextColor(getResources().getColor(R.color.text_muted, null));
-        cancel.setOnClickListener(v -> listener.onCancel());
+        cancel.setOnClickListener(v -> close());
         prompt.addView(cancel, margins(0, 6));
 
         GridLayout keys = new GridLayout(context);
@@ -101,7 +103,7 @@ final class UnlockChallenge extends FrameLayout {
         columns.addView(keypadHolder, new LinearLayout.LayoutParams(0, LayoutParams.MATCH_PARENT, 0.9f));
 
         newCode();
-        showLockout();
+        handler.postDelayed(giveUp, IDLE_MS);
     }
 
     /** "5280" → "Five Two Eight Zero". */
@@ -142,6 +144,7 @@ final class UnlockChallenge extends FrameLayout {
             back.setOnClickListener(v -> {
                 if (entry.length() > 0) entry.setLength(entry.length() - 1);
                 updateDots();
+                stillHere();
             });
             back.setLayoutParams(params);
             return back;
@@ -157,8 +160,20 @@ final class UnlockChallenge extends FrameLayout {
         return key;
     }
 
+    /** Someone's typing: give them another ten seconds. */
+    private void stillHere() {
+        handler.removeCallbacks(giveUp);
+        handler.postDelayed(giveUp, IDLE_MS);
+    }
+
+    private void close() {
+        handler.removeCallbacksAndMessages(null);
+        listener.onCancel();
+    }
+
     private void press(String digit, View key) {
-        if (SystemClock.elapsedRealtime() < lockedUntil || entry.length() >= LENGTH) return;
+        if (entry.length() >= LENGTH) return;
+        stillHere();
         key.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         entry.append(digit);
         error.setText("");
@@ -168,19 +183,18 @@ final class UnlockChallenge extends FrameLayout {
 
     private void check() {
         if (entry.toString().equals(code)) {
+            handler.removeCallbacksAndMessages(null);
             listener.onUnlocked();
             return;
         }
-        // A wrong guess always gets a new code, so random tapping can't creep up on it.
         if (++failedAttempts >= MAX_ATTEMPTS) {
-            failedAttempts = 0;
-            lockedUntil = SystemClock.elapsedRealtime() + LOCKOUT_MS;
-            newCode();
-            showLockout();
-        } else {
-            newCode();
-            fail("Not quite · here's a new code");
+            fail("");
+            handler.postDelayed(this::close, 400);
+            return;
         }
+        // A wrong guess always gets a new code, so random tapping can't creep up on it.
+        newCode();
+        fail("Not quite · here's a new code");
     }
 
     private void fail(String message) {
@@ -189,16 +203,6 @@ final class UnlockChallenge extends FrameLayout {
                 animate().translationX(-dp(10)).setDuration(60).withEndAction(() ->
                         animate().translationX(0).setDuration(60)));
         performHapticFeedback(HapticFeedbackConstants.REJECT);
-    }
-
-    private void showLockout() {
-        long remaining = lockedUntil - SystemClock.elapsedRealtime();
-        if (remaining <= 0) {
-            if (error.getText().toString().startsWith("Too many")) error.setText("");
-            return;
-        }
-        error.setText("Too many tries · wait " + (remaining / 1000 + 1) + "s");
-        handler.postDelayed(this::showLockout, 500);
     }
 
     private void updateDots() {

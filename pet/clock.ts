@@ -1,13 +1,17 @@
+import { PlayBall } from './ball';
+import { BugKind } from './engine/bugs';
 import { PetEngine, PetOptions } from './engine/engine';
+import { Traits, rollTraits } from './engine/personality';
 
 /**
  * The pet on the color clock, built on the Pixel Pet engine (MIT; see engine/LICENSE).
  * The display's own elements are its terrain: the clock and label are solid in the shape
  * of their letters, and the reminder pill is a rounded stone to climb onto and nap on.
  *
- * The clock's schedule is its day: awake and about during the day; in the last few
- * minutes before night it gets sleepy and heads to bed in a bottom corner; at night it
- * sleeps and pays no attention to touches; in the morning it wakes and does push-ups.
+ * The clock's schedule is its day: awake and about during the day, hunting the flies and
+ * crickets that turn up and now and then playing with a ball; in the last few minutes
+ * before night it gets sleepy and heads to bed; at night it sleeps, darkened so it doesn't
+ * catch the eye, and pays no attention to touches; in the morning it wakes and does push-ups.
  */
 
 export type Period = 'day' | 'dusk' | 'night';
@@ -29,30 +33,45 @@ export interface ClockPet {
 
 /** Gecko colors to choose from, most natural first (hue, degrees). */
 const HUES = [42, 120, 185, 215, 265, 320];
-/** How far its hue must be from both backgrounds to stand out. */
+/** How far a hue must be from the backgrounds to stand out. */
 const MIN_HUE_GAP = 60;
-/** Bugs turn up by themselves this often during the day (seconds). */
-const FLY_EVERY: [number, number] = [150, 420];
-/** A tap away from the pet calls a fly over, at most this often (ms). */
-const TAP_FLY_COOLDOWN = 8_000;
+/** How bright the gecko is at night: dark enough not to catch the eye. */
+const NIGHT_DIM = 0.38;
+/**
+ * Bugs turn up by themselves during the day, about this often (seconds, at random between
+ * the two), so it stays fed: a starving gecko is frantic in everything it does.
+ */
+const ON_THEIR_OWN: Record<BugKind, [number, number]> = { fly: [90, 240], cricket: [180, 420] };
+/** A tap away from the pet calls a bug over, at most this often (ms). */
+const TAP_BUG_COOLDOWN = 6_000;
+/** A ball turns up about this often during the day, and lasts about this long (seconds). */
+const BALL_EVERY: [number, number] = [360, 900];
+const BALL_LASTS: [number, number] = [60, 180];
+/** Its personality, rolled once and kept, like the original's settings do. */
+const TRAITS_KEY = 'color-clock-pet-traits';
+
+const between = ([lo, hi]: [number, number]) => (lo + Math.random() * (hi - lo)) * 1000;
 
 export function startClockPet(win: Window, first: Scene): ClockPet {
   const doc = win.document;
   const short = Math.min(win.innerWidth, win.innerHeight);
+  const px = Math.max(2, Math.min(6, Math.round(short / 120)));
+  const ball = new PlayBall(win, px);
   const opts: PetOptions = {
     // Big enough to see from across a room on a phone, not huge on a monitor.
-    px: Math.max(2, Math.min(6, Math.round(short / 120))),
+    px,
     color: seedColor(first.dayColor, first.nightColor),
+    dim: first.period === 'night' ? NIGHT_DIM : 1,
+    traits: loadTraits(win),
     nibble: false,
     // The digits are far too big to bounce under a gecko's feet.
     jostle: false,
-    // Its usual burst at a bug crosses most of a phone screen in a blink.
-    strike: 1.8,
     sleepAfterMs: Infinity,
     reducedMotion: win.matchMedia('(prefers-reduced-motion: reduce)').matches,
     maxFps: 30,
-    critters: { fly: { enabled: true, pace: 'normal' }, cricket: { enabled: false, pace: 'normal' } },
+    critters: { fly: { enabled: true, pace: 'normal' }, cricket: { enabled: true, pace: 'normal' } },
     mischief: false,
+    graph: ball,
     // ?petdebug in the address shows its terrain, route and home.
     debug: new URLSearchParams(win.location.search).has('petdebug'),
   };
@@ -63,44 +82,77 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
   engine.start();
   setPeriod(scene.period, true);
 
-  let flyTimer = 0;
-  const scheduleFly = () => {
-    win.clearTimeout(flyTimer);
-    flyTimer = win.setTimeout(() => {
-      if (scene.period === 'day') engine.spawnBug('fly', randomSpot());
-      scheduleFly();
-    }, (FLY_EVERY[0] + Math.random() * (FLY_EVERY[1] - FLY_EVERY[0])) * 1000);
+  const timers = new Set<number>();
+  const later = (ms: number, fn: () => void) => {
+    const id = win.setTimeout(() => { timers.delete(id); fn(); }, ms);
+    timers.add(id);
   };
-  scheduleFly();
 
-  // A quick tap somewhere away from the pet during the day brings a fly over to it.
+  // Bugs of their own accord, each kind at its own loose rhythm.
+  for (const kind of Object.keys(ON_THEIR_OWN) as BugKind[]) {
+    const next = () => later(between(ON_THEIR_OWN[kind]), () => {
+      if (scene.period === 'day') engine.spawnBug(kind, randomSpot());
+      next();
+    });
+    next();
+  }
+
+  // Now and then a ball rolls in; after a while it pops and play is over.
+  let ballPop = 0;
+  const nextBall = (first = false) => later(between(first ? [120, 360] : BALL_EVERY), () => {
+    if (scene.period === 'day' && !ball.active) {
+      const [color, shade] = ballColors(scene.dayColor, opts.color);
+      ball.spawn(color, shade);
+      later(1200, () => { if (ball.active) engine.command('play'); });
+      ballPop = win.setTimeout(() => ball.pop(), between(BALL_LASTS));
+    }
+    nextBall();
+  });
+  nextBall(true);
+  if (opts.debug) {
+    // Test hooks: start ball play or bring a bug on demand.
+    (win as unknown as { pet: object }).pet = {
+      ball: () => { const [c, s] = ballColors(scene.dayColor, opts.color); ball.spawn(c, s); later(1200, () => engine.command('play')); },
+      pop: () => ball.pop(),
+      bug: (kind: BugKind) => engine.spawnBug(kind, randomSpot()),
+      state: () => engine.state,
+    };
+  }
+
+  // A quick tap somewhere away from the pet during the day brings a bug over to it.
   let down: { x: number; y: number; t: number } | null = null;
-  let lastTapFly = 0;
+  let lastTapBug = 0;
   const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; };
   const onUp = (e: PointerEvent) => {
     const d = down;
     down = null;
     if (!d || scene.period !== 'day' || performance.now() - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 14) return;
-    if (engine.hits(e.clientX, e.clientY, true) || performance.now() - lastTapFly < TAP_FLY_COOLDOWN) return;
-    lastTapFly = performance.now();
-    engine.spawnBug('fly', { x: e.clientX / opts.px, y: e.clientY / opts.px });
+    if (engine.hits(e.clientX, e.clientY, true) || performance.now() - lastTapBug < TAP_BUG_COOLDOWN) return;
+    lastTapBug = performance.now();
+    engine.spawnBug(Math.random() < 0.7 ? 'fly' : 'cricket', { x: e.clientX / px, y: e.clientY / px });
   };
+  const onResize = () => ball.resize();
   win.addEventListener('pointerdown', onDown, { passive: true });
   win.addEventListener('pointerup', onUp, { passive: true });
+  win.addEventListener('resize', onResize);
 
   function randomSpot() {
-    return { x: (0.2 + Math.random() * 0.6) * win.innerWidth / opts.px, y: (0.25 + Math.random() * 0.5) * win.innerHeight / opts.px };
+    return { x: (0.2 + Math.random() * 0.6) * win.innerWidth / px, y: (0.25 + Math.random() * 0.5) * win.innerHeight / px };
   }
 
   function setPeriod(period: Period, initial = false) {
+    engine.setOptions({ dim: period === 'night' ? NIGHT_DIM : 1 });
     if (period === 'day') {
       engine.setOptions({ sleepAfterMs: Infinity, ignorePointer: false });
       if (!initial) {
         // Good morning: up, a blink, and a few proud push-ups.
         engine.command('wake');
-        win.setTimeout(() => { if (scene.period === 'day') engine.command('pushups'); }, 2500);
+        later(2500, () => { if (scene.period === 'day') engine.command('pushups'); });
       }
     } else {
+      // Play's over for the day.
+      win.clearTimeout(ballPop);
+      ball.pop();
       // "Away" to the pet means: go home to bed and stay asleep. It's sent all the way
       // there (or to nap on the reminder pill), not just to wherever counts as near home.
       engine.setOptions({ sleepAfterMs: 0, ignorePointer: period === 'night' });
@@ -121,12 +173,26 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
       if (periodChanged) setPeriod(next.period);
     },
     destroy() {
-      win.clearTimeout(flyTimer);
+      for (const id of timers) win.clearTimeout(id);
+      win.clearTimeout(ballPop);
       win.removeEventListener('pointerdown', onDown);
       win.removeEventListener('pointerup', onUp);
+      win.removeEventListener('resize', onResize);
+      ball.remove();
       engine.destroy();
     },
   };
+}
+
+/** This gecko's personality: rolled the first time, then the same every time it starts. */
+function loadTraits(win: Window): Traits {
+  try {
+    const saved = JSON.parse(win.localStorage.getItem(TRAITS_KEY) ?? 'null');
+    if (saved && typeof saved.speed === 'number') return saved;
+  } catch { /* storage unavailable: a fresh one each time */ }
+  const traits = rollTraits();
+  try { win.localStorage.setItem(TRAITS_KEY, JSON.stringify(traits)); } catch { /* as above */ }
+  return traits;
 }
 
 /** The engine reads the theme from these variables: the ground color and the text color. */
@@ -135,15 +201,26 @@ function applyColors(doc: Document, scene: Scene) {
   doc.documentElement.style.setProperty('--text-normal', scene.ink);
 }
 
-/** A gecko color that stands out against both the day and the night background. */
-function seedColor(day: string, night: string) {
-  const hues = [hueOf(day), hueOf(night)].filter((h): h is number => h !== null);
+/** Of HUES, the first far enough from all of `avoid` (or the farthest one). */
+function standOut(avoid: (number | null)[]) {
+  const hues = avoid.filter((h): h is number => h !== null);
   const gap = (h: number) => Math.min(...hues.map((b) => Math.min(Math.abs(h - b), 360 - Math.abs(h - b))), 180);
-  const pick = HUES.find((h) => gap(h) >= MIN_HUE_GAP) ?? HUES.reduce((a, b) => (gap(b) > gap(a) ? b : a));
-  return `hsl(${pick} 70% 55%)`;
+  return HUES.find((h) => gap(h) >= MIN_HUE_GAP) ?? HUES.reduce((a, b) => (gap(b) > gap(a) ? b : a));
 }
 
-/** Hue of a #rrggbb color, or null for greys (black, white) which any gecko stands out on. */
+/** A gecko color that stands out against both the day and the night background. */
+function seedColor(day: string, night: string) {
+  return `hsl(${standOut([hueOf(day), hueOf(night)])} 70% 55%)`;
+}
+
+/** A ball that stands out from the daytime background and from the gecko. */
+function ballColors(day: string, gecko: string): [string, string] {
+  const geckoHue = Number(gecko.match(/hsl\((\d+)/)?.[1] ?? 0);
+  const h = standOut([hueOf(day), geckoHue]);
+  return [`hsl(${h} 80% 60%)`, `hsl(${h} 70% 42%)`];
+}
+
+/** Hue of a #rrggbb color, or null for greys (black, white) which any color stands out on. */
 function hueOf(hex: string): number | null {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
   const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;

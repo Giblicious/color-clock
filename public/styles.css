@@ -159,3 +159,4 @@ body.clock-pet-hover, body.clock-pet-hover * { cursor: grab !important; }
 body.clock-pet-holding, body.clock-pet-holding * { cursor: grabbing !important; }
 /* Shown inside the Android app, which has its own settings. */
 body.embedded .overlay, body.embedded .sheet, body.embedded .scrim { display: none !important; }
+.clock-pet-ball { position: fixed; left: 0; top: 0; z-index: 1; pointer-events: none; image-rendering: pixelated; }

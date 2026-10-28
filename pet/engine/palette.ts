@@ -55,15 +55,16 @@ const luminance = ([r, g, b]: Rgb) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 2
  * Build the gecko palette from a seed colour. Values are kept inside a band that
  * reads as a living animal (no neon, no near-black) whatever the accent is.
  */
-export function buildPalette(doc: Document, seedExpr: string): Palette {
+export function buildPalette(doc: Document, seedExpr: string, dim = 1): Palette {
   const seed = resolveCssColor(doc, seedExpr) ?? [232, 184, 74];
   const bg = resolveCssColor(doc, 'var(--background-primary, #ffffff)') ?? [255, 255, 255];
   const ink = resolveCssColor(doc, 'var(--text-normal, #222222)') ?? [34, 34, 34];
   const dark = luminance(bg) < 0.45;
 
   const [h, s0, l0] = rgbToHsl(seed);
-  const s = clamp(s0, 0.3, 0.78);
-  const l = clamp(l0, 0.45, 0.62);
+  // dim < 1 darkens and mutes the whole animal (e.g. asleep in a dark room).
+  const s = clamp(s0, 0.3, 0.78) * (0.6 + 0.4 * dim);
+  const l = clamp(l0, 0.45, 0.62) * dim;
 
   return {
     base: hsl(h, s, l),

@@ -50,6 +50,7 @@ public class MainActivity extends Activity {
     };
     /** The gear is removed from layout when hidden so it never catches touches while invisible. */
     private final Runnable hideGear = () -> this.gear.animate().alpha(0f).setDuration(500).withEndAction(() -> this.gear.setVisibility(View.GONE));
+    private final Runnable rehideBars = this::hideSystemBars;
     private final Runnable hideLockHint = () -> this.lockHint.animate().alpha(0f).setDuration(400);
 
     private Prefs prefs;
@@ -116,6 +117,7 @@ public class MainActivity extends Activity {
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         Kiosk.applyPolicies(this);
+        watchSystemBars();
 
         // Check for an update shortly after launch (giving Wi-Fi time to connect), then every 6 hours.
         handler.postDelayed(scheduledUpdateCheck, 30_000);
@@ -142,6 +144,12 @@ public class MainActivity extends Activity {
         if (petView != null) petView.destroy();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        if (settingsScreen != null && settingsScreen.isOpen()) settingsScreen.touched();
+        return super.dispatchTouchEvent(event);
     }
 
     @Override
@@ -264,6 +272,30 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(hideGear);
         gear.animate().alpha(0f).setDuration(150).withEndAction(() -> gear.setVisibility(View.GONE));
         settingsScreen.open(settings);
+    }
+
+    /**
+     * A swipe from the edge can still bring the status and navigation bars in (even locked
+     * down, when there is nothing in them to use). Whenever they show, they go again shortly.
+     */
+    private void watchSystemBars() {
+        View decor = getWindow().getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) {
+            decor.setOnApplyWindowInsetsListener((v, insets) -> {
+                if (insets.isVisible(WindowInsets.Type.statusBars()) || insets.isVisible(WindowInsets.Type.navigationBars())) {
+                    handler.removeCallbacks(rehideBars);
+                    handler.postDelayed(rehideBars, 1_500);
+                }
+                return v.onApplyWindowInsets(insets);
+            });
+        } else {
+            decor.setOnSystemUiVisibilityChangeListener(flags -> {
+                if ((flags & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    handler.removeCallbacks(rehideBars);
+                    handler.postDelayed(rehideBars, 1_500);
+                }
+            });
+        }
     }
 
     private void hideSystemBars() {

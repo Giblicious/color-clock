@@ -30,6 +30,8 @@ export interface PetOptions extends BrainOptions {
   pranks?: Pranks;
   /** Something worth putting in its diary happened. */
   onDiary?: (kind: DiaryKind, text: string) => void;
+  /** How bright its colours are, 0–1 (1 = as usual); lower for a dark room. */
+  dim?: number;
   /** Letters dip and bounce under its feet (default on). Off for very large text. */
   jostle?: boolean;
   /** Pay no attention to the pointer or touches (it is asleep for the night). */
@@ -168,7 +170,7 @@ export class PetEngine {
 
   setOptions(o: Partial<PetOptions>) {
     Object.assign(this.opts, o);
-    if (o.color !== undefined) this.refreshPalette();
+    if (o.color !== undefined || o.dim !== undefined) this.refreshPalette();
     if (o.nibble === false) { this.nibbler.clear(); this.brain?.dropLetter(); }
     // A kind of bug switched off goes, there and then.
     if (o.critters) for (const bug of this.swarm.bugs) if (!this.allows(bug.kind)) bug.alive = false;
@@ -292,7 +294,7 @@ export class PetEngine {
   }
 
   private buildPalettes() {
-    this.pal = buildPalette(this.win.document, this.opts.color);
+    this.pal = buildPalette(this.win.document, this.opts.color, this.opts.dim ?? 1);
   }
 
   /** Text was written or a task completed: attract a bug, preferably near the caret. */
