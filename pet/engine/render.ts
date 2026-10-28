@@ -118,6 +118,12 @@ export class GeckoRenderer {
   private wasOn = new Set<number>();
   private wasLit = new Map<number, boolean>();
   private wasShadow = new Set<number>();
+  /** Hand the shadow over as shapes for another layer to draw (see SoftShadow)... */
+  collectShadow = false;
+  /** ...and/or paint it here in art pixels, as originally. */
+  pixelShadow = true;
+  /** This frame's shadow as ellipses, canvas px, when collectShadow is on. */
+  shadowShapes: { x: number; y: number; rx: number; ry: number }[] = [];
 
   /** Is the canvas-px box from (x0, y0) to (x1, y1) clear of everything drawn of the body and legs last frame? */
   clearOf(x0: number, y0: number, x1: number, y1: number) {
@@ -259,6 +265,8 @@ export class GeckoRenderer {
     if (this.shadow.length < sw * sh) this.shadow = new Uint8Array(sw * sh);
     const shadow = this.shadow;
     shadow.fill(0, 0, sw * sh);
+    const collect = this.collectShadow, pixels = this.pixelShadow, shapes: { x: number; y: number; rx: number; ry: number }[] = [];
+    this.shadowShapes = shapes;
     const mark = (x: number, y: number) => {
       const sx = x - bx, sy = y - by;
       if (sx >= 0 && sy >= 0 && sx < sw && sy < sh) shadow[sy * sw + sx] = 1;
@@ -276,6 +284,8 @@ export class GeckoRenderer {
       const q = project(p.x + o, p.y + o, g, 0, i > HIP);
       const rr = b.width(i) * b.breathScale(i) * b.squeeze[i] * (1 + NEARER * g) * res;
       // Tipped over, the shadow on the ground foreshortens into a narrow band.
+      if (collect) shapes.push({ x: q.x, y: q.y, rx: rr, ry: shadowRows < 0.999 ? Math.max(0.5, this.tiltA > 0.6 ? 0.5 : rr * shadowRows) : rr });
+      if (!pixels) continue;
       if (shadowRows < 0.999) { const sr = this.tiltA > 0.6 ? 0 : Math.round(rr * shadowRows); for (let dy = -sr; dy <= sr; dy++) for (let dx = -Math.round(rr); dx <= Math.round(rr); dx++) mark(Math.floor(q.x + dx), Math.floor(q.y + dy)); }
       else {
         // The shadow's edge is held like the body's (see holdEdges).
@@ -287,11 +297,13 @@ export class GeckoRenderer {
       const ax = (p.x + 0.5) / res, ay = (p.y + 0.5) / res;
       const o = this.tiltA > 0.6 ? 0 : castShadow(b, p.z, ax, ay);
       const q = project(ax + o, ay + o, b.ground(ax + o, ay + o));
+      if (collect) shapes.push({ x: q.x + this.brush / 2, y: q.y + this.brush / 2, rx: this.brush * 0.6, ry: this.brush * 0.6 });
+      if (!pixels) continue;
       for (let by = 0; by < this.brush; by++) for (let bx = 0; bx < this.brush; bx++) mark(Math.floor(q.x) + bx, Math.floor(q.y) + by);
     }
     ctx.fillStyle = pal.shadow;
     const shaded = new Set<number>();
-    for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+    if (pixels) for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
       if (!shadow[y * sw + x]) continue;
       shaded.add((by + y) * 65536 + bx + x);
       if (!(this.depth[y * bw + x] > 0)) ctx.fillRect(bx + x, by + y, 1, 1);

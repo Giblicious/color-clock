@@ -8,6 +8,7 @@ import { Palette, buildPalette } from './palette';
 import { BrainOptions, Ctx, DiaryKind, Personality, Playground, Pranks, STATE } from './personality';
 import { Reactions } from './reactions';
 import { GeckoRenderer } from './render';
+import { ShadowStyle, SoftShadow } from './softshadow';
 import { Zzz } from './zzz';
 import { Footprints, Happenings, HoverSim } from './surroundings';
 import { World } from './world';
@@ -30,6 +31,8 @@ export interface PetOptions extends BrainOptions {
   pranks?: Pranks;
   /** Something worth putting in its diary happened. */
   onDiary?: (kind: DiaryKind, text: string) => void;
+  /** How its shadow is drawn: in art pixels as originally (default), or on a full-resolution layer (see SoftShadow). */
+  shadowStyle?: ShadowStyle;
   /** How bright its colours are, 0–1 (1 = as usual); lower for a dark room. */
   dim?: number;
   /** Letters dip and bounce under its feet (default on). Off for very large text. */
@@ -62,6 +65,7 @@ export class PetEngine {
   private nibbler: Nibbler;
   private renderer = new GeckoRenderer();
   private zzz: Zzz;
+  private soft: SoftShadow | null = null;
   private body!: Body;
   private brain!: Personality;
   private pal!: Palette;
@@ -105,6 +109,7 @@ export class PetEngine {
     });
     this.zzz = new Zzz(win);
     this.nibbler = new Nibbler(win);
+    this.applyShadowStyle();
     this.buildPalettes();
   }
 
@@ -113,6 +118,7 @@ export class PetEngine {
     const doc = this.win.document;
     this.reactions.attach();
     doc.body.appendChild(this.canvas);
+    if (this.soft) doc.body.insertBefore(this.soft.canvas, this.canvas);
     this.reactions.attachTop();
     this.zzz.attach();
     this.world.px = this.opts.px;
@@ -157,6 +163,7 @@ export class PetEngine {
     this.reactions.destroy();
     this.zzz.destroy();
     this.canvas.remove();
+    this.soft?.remove();
   }
 
   /** Where the gecko is, in CSS px, so a rebuilt engine can carry on from there. */
@@ -171,12 +178,25 @@ export class PetEngine {
   setOptions(o: Partial<PetOptions>) {
     Object.assign(this.opts, o);
     if (o.color !== undefined || o.dim !== undefined) this.refreshPalette();
+    if (o.shadowStyle !== undefined) this.applyShadowStyle();
     if (o.nibble === false) { this.nibbler.clear(); this.brain?.dropLetter(); }
     // A kind of bug switched off goes, there and then.
     if (o.critters) for (const bug of this.swarm.bugs) if (!this.allows(bug.kind)) bug.alive = false;
     // More often than it was: the wait for the next prank shrinks to fit.
     if (o.mischiefMinutes && this.brain) this.brain.mischiefCooldown = Math.min(this.brain.mischiefCooldown, o.mischiefMinutes[1] * 3600);
     if ((o.traits || o.temperament) && this.opts.traits) this.brain?.setNature(this.opts.traits, this.opts.temperament);
+  }
+
+  /** Set up (or change) the shadow layer for opts.shadowStyle. */
+  private applyShadowStyle() {
+    const style = this.opts.shadowStyle ?? 'pixel';
+    if (style !== 'pixel' && !this.soft) {
+      this.soft = new SoftShadow(this.win, style);
+      if (this.canvas.isConnected) { this.canvas.before(this.soft.canvas); this.soft.resize(); }
+    }
+    if (this.soft) this.soft.style = style;
+    this.renderer.collectShadow = style !== 'pixel';
+    this.renderer.pixelShadow = !this.soft || this.soft.keepsPixels;
   }
 
   private allows(kind: BugKind) { return this.opts.critters?.[kind]?.enabled ?? kind === 'fly'; }
@@ -458,6 +478,7 @@ export class PetEngine {
     this.canvas.style.width = `${w * cpx}px`;
     this.canvas.style.height = `${h * cpx}px`;
     this.ctx2d.imageSmoothingEnabled = false;
+    this.soft?.resize();
   }
 
   private tick = (t: number) => {
@@ -571,6 +592,7 @@ export class PetEngine {
     }
     this.renderer.tilt = this.brain.napTilt;
     this.renderer.draw(g, this.body, pal, res);
+    if (this.soft) this.soft.draw(this.renderer.shadowShapes, pal.shadow, this.opts.px / res, this.opts.px);
     const zFrom = { x: this.renderer.headAt.x / res, y: this.renderer.headAt.y / res };
     // Fast asleep: Z's.
     const spot = this.emoteSpot(zFrom, res);

@@ -1,6 +1,7 @@
 import { PlayBall } from './ball';
 import { BugKind } from './engine/bugs';
 import { PetEngine, PetOptions } from './engine/engine';
+import { ShadowStyle } from './engine/softshadow';
 import { Traits, rollTraits } from './engine/personality';
 
 /**
@@ -64,6 +65,8 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     dim: first.period === 'night' ? NIGHT_DIM : 1,
     traits: loadTraits(win),
     nibble: false,
+    // The original crisp pixel shadow, with a soft glow falling off around it.
+    shadowStyle: 'halo',
     // The digits are far too big to bounce under a gecko's feet.
     jostle: false,
     sleepAfterMs: Infinity,
@@ -118,6 +121,9 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
       pop: () => ball.pop(),
       bug: (kind: BugKind) => engine.spawnBug(kind, randomSpot()),
       state: () => engine.state,
+      shadow: (style: ShadowStyle) => engine.setOptions({ shadowStyle: style }),
+      /** Show or hide the debug drawing (terrain, route) while keeping these hooks. */
+      overlay: (on: boolean) => engine.setOptions({ debug: on }),
       /** Put a bug `ahead` art px in front of its head, for measuring strikes. */
       bait: (kind: BugKind, ahead: number) => {
         const b = (engine as unknown as { body: { head: { x: number; y: number }; heading: number } }).body;
