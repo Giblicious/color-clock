@@ -68,7 +68,9 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     jostle: false,
     sleepAfterMs: Infinity,
     reducedMotion: win.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    maxFps: 30,
+    // The display rate: its strike is a burst of a tenth of a second, which at 30 fps is
+    // only three or four frames and looks like a jump. (The phone is always on a charger.)
+    maxFps: 0,
     critters: { fly: { enabled: true, pace: 'normal' }, cricket: { enabled: true, pace: 'normal' } },
     mischief: false,
     graph: ball,
@@ -116,6 +118,23 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
       pop: () => ball.pop(),
       bug: (kind: BugKind) => engine.spawnBug(kind, randomSpot()),
       state: () => engine.state,
+      /** Put a bug `ahead` art px in front of its head, for measuring strikes. */
+      bait: (kind: BugKind, ahead: number) => {
+        const b = (engine as unknown as { body: { head: { x: number; y: number }; heading: number } }).body;
+        engine.spawnBug(kind, { x: b.head.x + Math.cos(b.heading) * ahead, y: b.head.y + Math.sin(b.heading) * ahead });
+      },
+      /** Every animation frame for `seconds`: time, state, hunt phase and head (CSS px). */
+      trace: (seconds: number) => new Promise((resolve) => {
+        const e = engine as unknown as { body: { head: { x: number; y: number } }; brain: { stateData: { phase?: string } } };
+        const out: { t: number; s: string; p?: string; x: number; y: number }[] = [];
+        const t0 = performance.now();
+        const step = () => {
+          const t = performance.now() - t0;
+          out.push({ t: Math.round(t), s: engine.state, p: e.brain.stateData.phase, x: Math.round(e.body.head.x * px), y: Math.round(e.body.head.y * px) });
+          if (t < seconds * 1000) win.requestAnimationFrame(step); else resolve(out);
+        };
+        win.requestAnimationFrame(step);
+      }),
     };
   }
 

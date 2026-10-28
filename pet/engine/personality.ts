@@ -517,6 +517,9 @@ const StateHandlers: Record<State, Handler> = {
         if (sd.lungeTimer > sd.readyFor) {
           g.body.wiggle = 0;
           sd.phase = 'lunge'; sd.lungeTimer = 0;
+          // A committed lunge to where the prey is, and a little past: it doesn't chase on.
+          sd.from = { x: head.x, y: head.y };
+          sd.reach = huntDist + 8 * S;
           // Explosive: no easing in.
           g.currentSpeed = g.c.opts.reducedMotion ? g.speed : g.speed * 3.5;
           g.body.mouthTarget = 1;
@@ -526,7 +529,8 @@ const StateHandlers: Record<State, Handler> = {
       // The strike: a burst straight at it, jaws gaping.
       g.body.mouthTarget = 1;
       const strike = g.c.opts.reducedMotion ? g.speed : bug ? g.speed * 3.5 : huntDist < 30 * S ? g.speed * 0.8 : g.speed * 2;
-      if (huntLost || sd.lungeTimer > (bug ? 30 : 60)) {
+      const overshot = !!bug && !!sd.from && dist(sd.from.x, sd.from.y, head.x, head.y) > sd.reach;
+      if (huntLost || overshot || sd.lungeTimer > (bug ? 30 : 60)) {
         // Missed: it skids to a stop and looks about, as if it meant to.
         g.body.mouthTarget = 0;
         g.flick();
