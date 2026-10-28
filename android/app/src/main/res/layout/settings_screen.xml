@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full-screen settings for an 800x360dp landscape phone: 56dp header + 304dp body, no scrolling. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/screen"
+    android:clickable="true"
+    android:focusable="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:gravity="center_vertical"
+            android:paddingStart="8dp"
+            android:paddingEnd="16dp">
+
+            <ImageButton
+                android:id="@+id/close"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_button_ghost"
+                android:contentDescription="Cancel"
+                android:src="@drawable/ic_close"
+                android:tint="@color/text_muted" />
+
+            <LinearLayout
+                android:id="@+id/tabs"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center">
+
+                <TextView
+                    android:id="@+id/tab_schedule"
+                    style="@style/Settings.Tab"
+                    android:text="Schedule" />
+
+                <TextView
+                    android:id="@+id/tab_display"
+                    style="@style/Settings.Tab"
+                    android:layout_marginStart="4dp"
+                    android:text="Display" />
+
+                <TextView
+                    android:id="@+id/tab_lock"
+                    style="@style/Settings.Tab"
+                    android:layout_marginStart="4dp"
+                    android:text="Child lock" />
+
+                <TextView
+                    android:id="@+id/tab_device"
+                    style="@style/Settings.Tab"
+                    android:layout_marginStart="4dp"
+                    android:text="Device" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/done"
+                style="@style/Settings.Button"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_button_primary"
+                android:text="Done" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="16dp">
+
+            <include
+                android:id="@+id/page_schedule"
+                layout="@layout/page_schedule" />
+
+            <include
+                android:id="@+id/page_display"
+                layout="@layout/page_display"
+                android:visibility="gone" />
+
+            <include
+                android:id="@+id/page_lock"
+                layout="@layout/page_lock"
+                android:visibility="gone" />
+
+            <include
+                android:id="@+id/page_device"
+                layout="@layout/page_device"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>

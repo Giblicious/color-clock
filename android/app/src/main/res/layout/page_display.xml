@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two toggle tiles; each shows a miniature of what it adds to the screen. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/tile_clock"
+        style="@style/Settings.Card"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginEnd="8dp"
+        android:layout_weight="1"
+        android:clickable="true"
+        android:focusable="true">
+
+        <FrameLayout
+            android:id="@+id/mini_clock"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/mini_clock_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:fontFamily="sans-serif-black"
+                android:fontFeatureSettings="tnum"
+                android:textSize="40sp" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    style="@style/Settings.Title"
+                    android:text="Large clock" />
+
+                <TextView
+                    style="@style/Settings.Body"
+                    android:text="Shows the time in the middle of the screen" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/check_clock"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/bg_check"
+                android:contentDescription="On"
+                android:padding="6dp"
+                android:src="@drawable/ic_check" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/tile_status"
+        style="@style/Settings.Card"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1"
+        android:clickable="true"
+        android:focusable="true">
+
+        <FrameLayout
+            android:id="@+id/mini_status"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/mini_status_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="14dp"
+                android:paddingStart="12dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="5dp"
+                android:textSize="13sp" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    style="@style/Settings.Title"
+                    android:text="Next change reminder" />
+
+                <TextView
+                    style="@style/Settings.Body"
+                    android:text="A small note saying when the color changes" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/check_status"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/bg_check"
+                android:contentDescription="On"
+                android:padding="6dp"
+                android:src="@drawable/ic_check" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,49 @@
+plugins {
+    id "com.android.application"
+}
+
+def versionProps = new Properties()
+file("../version.properties").withInputStream { versionProps.load(it) }
+def signingProps = new Properties()
+def signingFile = file("../signing/signing.properties")
+if (signingFile.exists()) signingFile.withInputStream { signingProps.load(it) }
+
+android {
+    namespace "com.giblicious.colorclock"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.giblicious.colorclock"
+        minSdk 26
+        targetSdk 35
+        versionCode versionProps.getProperty("versionCode").toInteger()
+        versionName versionProps.getProperty("versionName")
+    }
+
+    signingConfigs {
+        release {
+            if (signingFile.exists()) {
+                storeFile file("../signing/" + signingProps.getProperty("storeFile"))
+                storePassword signingProps.getProperty("storePassword")
+                keyAlias signingProps.getProperty("keyAlias")
+                keyPassword signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

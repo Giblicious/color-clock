@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- About this phone and app. -->
+    <LinearLayout
+        style="@style/Settings.Card"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginEnd="8dp"
+        android:layout_weight="1">
+
+        <TextView
+            style="@style/Settings.Title"
+            android:text="Color Clock"
+            android:textSize="22sp" />
+
+        <TextView
+            android:id="@+id/device_facts"
+            style="@style/Settings.Body"
+            android:layout_width="match_parent"
+            android:layout_marginTop="10dp"
+            android:lineSpacingExtra="8dp"
+            android:textSize="15sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/update_info"
+            style="@style/Settings.Body"
+            android:layout_width="match_parent"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Actions. -->
+    <LinearLayout
+        style="@style/Settings.Card"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1">
+
+        <Button
+            android:id="@+id/check_update"
+            style="@style/Settings.Button"
+            android:layout_width="match_parent"
+            android:text="Check for update" />
+
+        <Button
+            android:id="@+id/kiosk"
+            style="@style/Settings.Button"
+            android:layout_width="match_parent"
+            android:layout_marginTop="10dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/release_owner"
+            style="@style/Settings.Button"
+            android:layout_width="match_parent"
+            android:background="@drawable/bg_button_ghost"
+            android:text="Hold to release device owner"
+            android:textColor="@color/danger" />
+    </LinearLayout>
+</LinearLayout>

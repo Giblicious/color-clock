@@ -1,0 +1,16 @@
+{
+  "name": "color-clock",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check public/app.js && node --check public/schedule.js && node --check public/sw.js && node --check tools/dev-server.mjs && node --check tools/android-release.mjs && npm test",
+    "dev": "node tools/dev-server.mjs",
+    "test": "node --test test/*.test.js",
+    "android:build": "node tools/android-release.mjs --build-only",
+    "android:release": "node tools/android-release.mjs --bump"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

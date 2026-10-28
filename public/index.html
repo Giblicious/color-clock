@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#16a34a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Color Clock</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="screen" aria-live="polite">
+    <div id="content" class="content">
+      <time id="clock" class="clock" hidden></time>
+      <div id="label" class="label" hidden></div>
+    </div>
+    <div id="status" class="status" hidden></div>
+
+    <div id="overlay" class="overlay">
+      <button id="open-settings" class="gear" type="button" aria-label="Open settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.47.47 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58a7.4 7.4 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"/></svg>
+      </button>
+    </div>
+
+    <div id="scrim" class="scrim" hidden></div>
+    <aside id="settings" class="sheet" aria-labelledby="settings-title" hidden>
+      <header class="sheet-header">
+        <div>
+          <h1 id="settings-title">Color Clock</h1>
+          <p class="sync-line">Saved in this browser</p>
+        </div>
+        <button id="cancel-settings" class="ghost" type="button">Cancel</button>
+        <button id="save-settings" class="primary" type="button">Save</button>
+      </header>
+
+      <div class="sheet-body">
+        <h2>Schedule</h2>
+        <div class="periods" role="tablist" aria-label="Period to edit">
+          <button class="period" type="button" role="tab" data-period="day"><span class="period-name">Day</span><span class="period-time"></span><span class="period-label"></span></button>
+          <button class="period" type="button" role="tab" data-period="night"><span class="period-name">Night</span><span class="period-time"></span><span class="period-label"></span></button>
+        </div>
+        <p id="editing-hint" class="hint"></p>
+
+        <section class="card">
+          <label class="row">Starts at <input id="start" type="time" required></label>
+          <div class="field">
+            <span>Color</span>
+            <div id="swatches" class="swatches"></div>
+            <label class="custom-color">Custom <input id="color" type="color"></label>
+          </div>
+          <label class="field">Label <input id="label-input" type="text" maxlength="40" autocomplete="off"></label>
+        </section>
+
+        <h2>Display</h2>
+        <section class="card">
+          <label class="switch">Large clock <input id="show-time" type="checkbox" role="switch"></label>
+          <label class="switch">Next change reminder <input id="show-status" type="checkbox" role="switch"></label>
+        </section>
+
+        <h2>This browser</h2>
+        <div class="button-grid">
+          <button id="fullscreen" type="button">Fullscreen</button>
+          <button id="wake-lock" type="button">Keep screen awake</button>
+        </div>
+      </div>
+    </aside>
+
+    <p id="toast" class="toast" role="status" hidden></p>
+  </main>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

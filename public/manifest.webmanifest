@@ -1,0 +1,13 @@
+{
+  "name": "Color Clock",
+  "short_name": "Color Clock",
+  "description": "A full-screen color that changes on a schedule.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#16a34a",
+  "theme_color": "#16a34a",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
