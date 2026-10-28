@@ -1,9 +1,9 @@
 import { PetEngine, PetOptions } from './engine/engine';
 
 /**
- * The pet on the color clock, built on the Pixel Pet engine (MIT; see engine/LICENSE). The display's own elements are its terrain: the clock and
- * label are text it climbs over (letters dip under its feet), and the reminder pill is a
- * stone to nap on.
+ * The pet on the color clock, built on the Pixel Pet engine (MIT; see engine/LICENSE).
+ * The display's own elements are its terrain: the clock and label are solid in the shape
+ * of their letters, and the reminder pill is a rounded stone to climb onto and nap on.
  *
  * The clock's schedule is its day: awake and about during the day; in the last few
  * minutes before night it gets sleepy and heads to bed in a bottom corner; at night it
@@ -46,6 +46,8 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     nibble: false,
     // The digits are far too big to bounce under a gecko's feet.
     jostle: false,
+    // Its usual burst at a bug crosses most of a phone screen in a blink.
+    strike: 1.8,
     sleepAfterMs: Infinity,
     reducedMotion: win.matchMedia('(prefers-reduced-motion: reduce)').matches,
     maxFps: 30,

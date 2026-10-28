@@ -64,6 +64,8 @@ const TEXT_ROOTS = '.cm-content, .markdown-preview-view';
  * only where there is ink, and walks through the gaps and counters between.
  */
 const GLYPH_ATTR = 'data-pet-glyphs';
+/** Elements marked with this are raised terrain in the shape of their box, rounded corners and all. */
+const SOLID_ATTR = 'data-pet-solid';
 /** Ink coverage (0–255) at which an art pixel counts as part of a letter. */
 const GLYPH_INK = 110;
 /** Bounds on the text scan, which runs twice a second. */
@@ -242,7 +244,7 @@ export class World {
     const doc = this.win.document, vh = this.win.innerHeight;
     const all = Array.from(doc.querySelectorAll<HTMLElement>(TEXT_ROOTS)).filter((r) => !r.parentElement?.closest(TEXT_ROOTS));
     const roots = all.filter((r) => !r.hasAttribute(GLYPH_ATTR));
-    const glyphs = this.scanGlyphs(all.filter((r) => r.hasAttribute(GLYPH_ATTR)));
+    const glyphs = this.scanGlyphs(all.filter((r) => r.hasAttribute(GLYPH_ATTR)), Array.from(doc.querySelectorAll<HTMLElement>(`[${SOLID_ATTR}]`)));
     const range = doc.createRange();
     const lines: Rect[] = [];
     let nodes = 0;
@@ -314,10 +316,11 @@ export class World {
 
   /**
    * Draw the text of glyph-terrain roots into an art-pixel canvas, in their own font, to get
-   * the shapes of the letters. Returns each letter's ink box (art px) for the text list.
+   * the shapes of the letters, along with the rounded boxes of solid elements. Returns each
+   * letter's ink box (art px) for the text list.
    */
-  private scanGlyphs(roots: HTMLElement[]): (Rect & { glyph: true })[] {
-    if (!roots.length) { this.glyphInk = null; return []; }
+  private scanGlyphs(roots: HTMLElement[], solids: HTMLElement[]): (Rect & { glyph: true })[] {
+    if (!roots.length && !solids.length) { this.glyphInk = null; return []; }
     const doc = this.win.document, p = this.px;
     const w = Math.ceil(this.win.innerWidth / p), h = Math.ceil(this.win.innerHeight / p);
     const canvas = (this.glyphCanvas ??= doc.createElement('canvas'));
@@ -328,6 +331,14 @@ export class World {
     ctx.fillStyle = '#000';
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
+    for (const el of solids) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      const radius = Math.min(parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, r.width / 2, r.height / 2);
+      ctx.beginPath();
+      ctx.roundRect(r.left / p, r.top / p, r.width / p, r.height / p, radius / p);
+      ctx.fill();
+    }
     const range = doc.createRange();
     const spans: { x0: number; x1: number; y0: number; y1: number }[] = [];
     for (const root of roots) {

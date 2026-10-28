@@ -74,6 +74,8 @@ export interface BrainOptions {
   mischief?: boolean;
   /** How many minutes between pranks: at random, between these two. */
   mischiefMinutes?: [number, number];
+  /** How many times its speed it strikes at a bug with (default 3.5). Lower on small screens. */
+  strike?: number;
 }
 
 export interface Ctx {
@@ -518,15 +520,17 @@ const StateHandlers: Record<State, Handler> = {
           g.body.wiggle = 0;
           sd.phase = 'lunge'; sd.lungeTimer = 0;
           // Explosive: no easing in.
-          g.currentSpeed = g.c.opts.reducedMotion ? g.speed : g.speed * 3.5;
+          g.currentSpeed = g.c.opts.reducedMotion ? g.speed : g.speed * (g.c.opts.strike ?? 3.5);
           g.body.mouthTarget = 1;
         }
         return { targetSpeed: 0 };
       }
       // The strike: a burst straight at it, jaws gaping.
       g.body.mouthTarget = 1;
-      const strike = g.c.opts.reducedMotion ? g.speed : bug ? g.speed * 3.5 : huntDist < 30 * S ? g.speed * 0.8 : g.speed * 2;
-      if (huntLost || sd.lungeTimer > (bug ? 30 : 60)) {
+      const burst = g.c.opts.strike ?? 3.5;
+      const strike = g.c.opts.reducedMotion ? g.speed : bug ? g.speed * burst : huntDist < 30 * S ? g.speed * 0.8 : g.speed * 2;
+      // A slower strike gets as long as it needs to cover the same ground.
+      if (huntLost || sd.lungeTimer > (bug ? 30 * Math.max(1, 3.5 / burst) : 60)) {
         // Missed: it skids to a stop and looks about, as if it meant to.
         g.body.mouthTarget = 0;
         g.flick();
