@@ -38,6 +38,13 @@ android {
         }
     }
 
+    // The web display (and its pet) is served to the in-app web view from the repo's public/ folder.
+    sourceSets {
+        main {
+            assets.srcDirs += ["../../public"]
+        }
+    }
+
     buildFeatures {
         buildConfig true
     }

@@ -346,6 +346,10 @@ final class SettingsScreen {
     private void bindDisplay() {
         view.findViewById(R.id.tile_clock).setOnClickListener(v -> { draft.showTime = !draft.showTime; tap(v); refreshDisplay(); });
         view.findViewById(R.id.tile_status).setOnClickListener(v -> { draft.showStatus = !draft.showStatus; tap(v); refreshDisplay(); });
+        view.findViewById(R.id.tile_pet).setOnClickListener(v -> { draft.pet = !draft.pet; tap(v); refreshDisplay(); });
+        // Pixel art: scale it without smoothing.
+        Drawable gecko = ((ImageView) view.findViewById(R.id.mini_pet_image)).getDrawable();
+        if (gecko != null) gecko.setFilterBitmap(false);
     }
 
     private void refreshDisplay() {
@@ -368,6 +372,9 @@ final class SettingsScreen {
 
         paintToggle(view.findViewById(R.id.tile_clock), view.findViewById(R.id.check_clock), draft.showTime);
         paintToggle(view.findViewById(R.id.tile_status), view.findViewById(R.id.check_status), draft.showStatus);
+        paintToggle(view.findViewById(R.id.tile_pet), view.findViewById(R.id.check_pet), draft.pet);
+        view.findViewById(R.id.mini_pet).setBackground(rounded(day, 14));
+        view.findViewById(R.id.mini_pet_image).setAlpha(draft.pet ? 1f : 0.3f);
     }
 
     // --- Child lock ---

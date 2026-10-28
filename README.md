@@ -13,6 +13,7 @@ It comes in two forms:
 
 - Day and night colors, start times, brightness, and an optional label for each (e.g. "Stay in bed" / "OK to wake").
 - Optional large clock and a "next change" reminder.
+- **A pixel gecko** (on by default, toggle under **Display**) that lives on the screen. During the day it explores, climbs over the clock digits (they dip under its feet), naps on the reminder like a warm stone, and hunts flies — tap anywhere away from it to call one over, or hold a finger on it to pet it. Ten minutes before night it gets sleepy and heads to bed; at night it sleeps and ignores touches; in the morning it wakes up and does a few push-ups. A simple "when the gecko is up, you can get up" for kids who can't read a clock yet.
 - Colors crossfade, text adapts its ink to stay readable on any color, and drifts a few pixels each minute to avoid burn-in.
 - Full-screen settings laid out for a landscape phone, with nothing to scroll. Tap the screen, then the gear.
 - **Child lock**: taps do nothing and the power menu is hidden. To open settings, hold the top-right corner for 3 seconds, then type the code shown in words (a new code every time, e.g. "Five Two Eight Zero" → 5280). Nothing to remember, but a child who can't read can't get in.
@@ -49,7 +50,7 @@ Releases are signed with a key in `android/signing/`, which is not in git. Andro
 
 ## Web page
 
-Open `public/index.html` from any static web host. Move the pointer or tap to show the gear; settings are saved in the browser.
+Open `public/index.html` from any static web host. Move the pointer or tap to show the gear; settings are saved in the browser. The gecko lives here too. The Android app bundles this same page (with the gecko) and drives it from its own settings.
 
 ```sh
 npm run dev                # http://127.0.0.1:8088
@@ -60,6 +61,10 @@ Browsers limit what a page can do: fullscreen needs a tap, screen wake lock only
 
 ## Development
 
+The gecko's engine is in `pet/engine/`, and `pet/clock.ts` adapts it to the clock: the display's elements become its terrain and the schedule becomes its day. It's bundled into `public/pet.js`, which is committed so the web version needs no build step.
+
 ```sh
-npm run check              # syntax checks and tests
+npm install
+npm run check              # typecheck, syntax checks and tests
+npm run pet:build          # rebuild public/pet.js after changing pet/
 ```

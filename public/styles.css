@@ -30,7 +30,7 @@ button { cursor: pointer; }
   display: grid; place-content: center; justify-items: center; gap: 1.2vmin;
   transform: translate(var(--drift-x), var(--drift-y));
   transition: inset 280ms cubic-bezier(.2, .8, .2, 1), transform 2s ease-in-out;
-  pointer-events: none; user-select: none; text-align: center; padding: 0 4cqw;
+  user-select: none; text-align: center; padding: 0 4cqw;
   container-type: size;
 }
 .clock {
@@ -146,3 +146,16 @@ input[type="color"] { width: 64px; height: 34px; padding: 2px; border: 1px solid
   .sheet { animation: none; }
 }
 .button-grid button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* The pet: a click-through layer over the display, below the settings. */
+.workspace-leaf { position: fixed; inset: 0; pointer-events: none; }
+.workspace-leaf > * { pointer-events: auto; }
+.clock-pet-overlay, .clock-pet-letters, .clock-pet-carried, .clock-pet-zzz {
+  position: fixed; left: 0; top: 0; z-index: 1; pointer-events: none; image-rendering: pixelated;
+}
+.clock-pet-letters { z-index: 0; }
+::highlight(clock-pet-jostle) { color: transparent; }
+body.clock-pet-hover, body.clock-pet-hover * { cursor: grab !important; }
+body.clock-pet-holding, body.clock-pet-holding * { cursor: grabbing !important; }
+/* Shown inside the Android app, which has its own settings. */
+body.embedded .overlay, body.embedded .sheet, body.embedded .scrim { display: none !important; }

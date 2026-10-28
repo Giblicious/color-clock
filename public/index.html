@@ -14,11 +14,15 @@
 </head>
 <body>
   <main id="screen" aria-live="polite">
-    <div id="content" class="content">
-      <time id="clock" class="clock" hidden></time>
-      <div id="label" class="label" hidden></div>
+    <!-- The pet treats these like a page of notes: the clock and label are text to climb
+         over, and the reminder pill is a stone to nap on. -->
+    <div class="workspace-leaf">
+      <div id="content" class="content markdown-preview-view">
+        <time id="clock" class="clock" hidden></time>
+        <div id="label" class="label" hidden></div>
+      </div>
+      <div id="status" class="status callout" hidden></div>
     </div>
-    <div id="status" class="status" hidden></div>
 
     <div id="overlay" class="overlay">
       <button id="open-settings" class="gear" type="button" aria-label="Open settings">
@@ -59,6 +63,7 @@
         <section class="card">
           <label class="switch">Large clock <input id="show-time" type="checkbox" role="switch"></label>
           <label class="switch">Next change reminder <input id="show-status" type="checkbox" role="switch"></label>
+          <label class="switch">Gecko <input id="show-pet" type="checkbox" role="switch"></label>
         </section>
 
         <h2>This browser</h2>

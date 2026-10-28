@@ -55,6 +55,8 @@ public class MainActivity extends Activity {
     private Prefs prefs;
     private Settings settings;
     private ScreenView screen;
+    /** The display with the gecko on it, while the pet is switched on. */
+    private PetView petView;
     private View gear;
     private SettingsScreen settingsScreen;
     private HoldRing holdRing;
@@ -76,6 +78,7 @@ public class MainActivity extends Activity {
         screen = new ScreenView(this);
         screen.setOnTouchListener((v, event) -> onScreenTouch(event));
         root.addView(screen);
+        syncPetView(root);
 
         ImageView gearButton = new ImageView(this);
         gearButton.setImageResource(R.drawable.ic_settings);
@@ -121,6 +124,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (petView != null) petView.onResume();
         hideSystemBars();
         if (prefs.kioskWanted()) lockKiosk();
         handler.post(tick);
@@ -128,12 +132,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        if (petView != null) petView.onPause();
         handler.removeCallbacks(tick);
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        if (petView != null) petView.destroy();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -192,7 +198,7 @@ public class MainActivity extends Activity {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 if (inCorner) holdRing.start(this::unlockChildLock);
-                else countLockedTap();
+                else if (petView == null) countLockedTap();
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (!inCorner) holdRing.cancel();
@@ -224,6 +230,25 @@ public class MainActivity extends Activity {
             @Override public void onCancel() { root.removeView(gate[0]); hideSystemBars(); }
         });
         root.addView(gate[0], new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+
+    /**
+     * With the pet on, the display is the web version with the gecko living on it, laid over
+     * the native screen (which still sets brightness). Touches reach both: the app's own
+     * handling (gear, child lock) and the pet.
+     */
+    private void syncPetView(FrameLayout root) {
+        if (settings.pet && petView == null) {
+            petView = new PetView(this, settings);
+            petView.setOnTouchListener((v, event) -> { onScreenTouch(event); return false; });
+            root.addView(petView, 1, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        } else if (settings.pet) {
+            petView.apply(settings);
+        } else if (petView != null) {
+            root.removeView(petView);
+            petView.destroy();
+            petView = null;
+        }
     }
 
     private void revealGear() {
@@ -301,6 +326,7 @@ public class MainActivity extends Activity {
             prefs.setChildLock(childLock);
             Kiosk.applyPolicies(MainActivity.this);
             settings = saved;
+            syncPetView((FrameLayout) screen.getParent());
             prefs.saveSettings(saved);
             render();
             Toast.makeText(MainActivity.this, "Saved", Toast.LENGTH_SHORT).show();

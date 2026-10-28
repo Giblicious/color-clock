@@ -1,0 +1,2436 @@
+import { Body, Drive, HIP as HIP_SEG, NEARER, Pt, TAIL_FIRST, TORSO_FIRST } from './body';
+import type { Bug, Particles, Swarm } from './bugs';
+import type { InputTracker } from './input';
+import { Rect, angleDiff, clamp, lerp, rand, smoothstep } from './math';
+import type { NibbleTarget, Nibbler } from './nibble';
+import type { Palette } from './palette';
+import type { Reactions } from './reactions';
+import { Waypoint, findRoute } from './route';
+import type { CoverEntry, Rock, World } from './world';
+
+// ═══════════════════════════════════════════════════════════════════
+// PERSONALITY
+// ═══════════════════════════════════════════════════════════════════
+// The mind of the gecko, ported from the original pixel-lizard prototype
+// (pixel-lizard-new-states.jsx): its trait engine, drives, state machine and the
+// rhythms of each state are kept close to the original. Instead of moving a spine of
+// its own, it steers the physical Body (feet, gait, flexion), so movement quality comes
+// from the body and character comes from here.
+//
+// Changes from the original:
+//   - Steps on a fixed 60 Hz tick, so it no longer speeds up on high-refresh displays.
+//   - Wall steering blends along the shortest arc (the original could spin near walls).
+//   - Sleep peeking is timed in ticks instead of setTimeout.
+//   - Walls are the workspace's panel seams and the window; home is a panel corner.
+//   - Prey is only struck when it is on the ground; flying insects are watched.
+//   - The stats readout is gone. Hunger and sleepiness only show through behaviour.
+//   - New: scare() for pokes, panels and typing; petting; stealing a letter out of a
+//     word to carry off and eat; and a nap when the user is away.
+//   - New: the workspace is terrain. It climbs onto the sidebars and tabs and over
+//     your text, and squeezes along the gaps between paragraphs (the Body does the
+//     climbing). Side panels are also cover: it slips under one, waits and peeks back
+//     out, and bolts for one when frightened. While it is under a panel, a pointer or
+//     click on that panel is above it and unseen.
+//   - New: it finds its way over that terrain (route.ts) instead of beelining: along the
+//     margins and the gaps between paragraphs, around headings, climbing when it pays.
+//   - New: it notices what happens in Obsidian. A modal or the command palette opening
+//     freezes it, watching, until it closes; a notice popping up draws it over to pounce;
+//     something being dragged is prey to chase; a new note gets a look round. While you
+//     type it creeps closer, hesitantly, and lurks a little way off, watching; when you
+//     stop, it comes right up to sniff along the words you just wrote.
+//
+// Sections: TRAIT SYSTEM · NEEDS · SUB-BEHAVIOURS · STATE HANDLERS · PERSONALITY
+// Distances are multiples of S (the original's body scale, here in art px) and times
+// are in 60 Hz ticks, exactly as in the original.
+
+const S = 0.55;
+/** The pointer catches its eye within this distance (art px)... */
+const CURIOUS_RADIUS = 170;
+/** ...and within this one it stalks it. */
+const STALK_RADIUS = 55;
+/** Hiding under the side panels is switched off for now; the code stays for later. */
+const HIDING = false;
+/** A prank's button sits this far ahead of its shoulder and out to the side (art px)... */
+const PRANK_AHEAD = 2.5, PRANK_OUT = 5;
+/** ...and the hand is raised this high above it before it comes down (art px). */
+const PRANK_RAISE = 7;
+/** Minutes between pranks, at random within this range, unless the settings say otherwise. */
+const MISCHIEF_MINUTES: [number, number] = [8, 20];
+/** Once it's fast asleep, it sleeps at least this long (ticks) before waking by itself. */
+const MIN_SLEEP = 600;
+/** Ticks between asking for food at the pet panel: 3 to 7 minutes. */
+const SNACK_EVERY = [3 * 3600, 7 * 3600];
+const dist = (x1: number, y1: number, x2: number, y2: number) => Math.hypot(x2 - x1, y2 - y1);
+const lerpAngle = (a: number, b: number, t: number) => a + angleDiff(a, b) * t;
+
+export interface BrainOptions {
+  nibble: boolean;
+  sleepAfterMs: number;
+  reducedMotion: boolean;
+  traits?: Traits;
+  /** A nudge to its rolled nature, or 'own' for none. */
+  temperament?: Temperament;
+  /** Harmless pranks on the workspace's buttons. */
+  mischief?: boolean;
+  /** How many minutes between pranks: at random, between these two. */
+  mischiefMinutes?: [number, number];
+}
+
+export interface Ctx {
+  body: Body;
+  world: World;
+  input: InputTracker;
+  swarm: Swarm;
+  nibbler: Nibbler;
+  reactions: Reactions;
+  particles: Particles;
+  pal: Palette;
+  opts: BrainOptions;
+  now: number;
+  /** Pointer in art px, or null. */
+  pointer: { x: number; y: number } | null;
+  pointerSpeed: number;
+  /** The nodes of an open graph view, to play with (art px), when there is one. */
+  graph?: Playground | null;
+  /** Buttons on screen it could press. */
+  pranks?: Pranks | null;
+  /** Something worth putting in its diary happened. */
+  log?: (kind: DiaryKind, text: string) => void;
+}
+
+/** The kinds of thing its diary records. */
+export type DiaryKind = 'catch' | 'letter' | 'nap' | 'sleep' | 'play' | 'prank' | 'snack' | 'explore' | 'retreat' | 'petted' | 'held' | 'startle' | 'pushups' | 'bask' | 'search' | 'cheer';
+
+/**
+ * A button on screen it could press (art px): where to press it, and what pressing it
+ * does. 'food' asks for something to eat, which it does when it's hungry; 'mischief' is
+ * a prank, only when it's allowed to be mischievous.
+ */
+export interface PrankTarget {
+  id: string;
+  kind: 'food' | 'mischief';
+  x: number;
+  y: number;
+  /** Still there to be pressed? */
+  ok(): boolean;
+  /** Its hand is over the button: the button shows its hover state, as for a pointer. */
+  hover(on: boolean): void;
+  /** Pressed down (true), and let go (false): the button shows it pressed. */
+  down(on: boolean): void;
+  /** Let go of, the press complete: whatever the button does, and what it did (for the diary). */
+  press(): string | void;
+}
+export interface Pranks {
+  /** What it could press now; a prank it owes putting right comes first, marked `due`. */
+  targets(): (PrankTarget & { due?: boolean })[];
+}
+
+/** A node of the graph view, as a ball to play with (art px). */
+export interface Ball { id: string; x: number; y: number; r: number; }
+export interface Playground {
+  balls(): Ball[];
+  /** Hold ball `id` at (x, y) art px until let go. */
+  push(id: string, x: number, y: number): void;
+  letGo(id: string): void;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TRAIT SYSTEM
+// ═══════════════════════════════════════════════════════════════════
+// Traits are soft-normalised against a budget to prevent a "god lizard": only the
+// ratios between them matter. Each install rolls its own personality.
+
+const TRAIT_BUDGET = 2.5;
+export type Traits = Record<'speed' | 'aggression' | 'awareness' | 'endurance' | 'metabolism', number>;
+
+export function rollTraits(): Traits {
+  const r = () => 0.3 + Math.random() * 0.4;
+  return { speed: r(), aggression: r(), awareness: r(), endurance: r(), metabolism: r() };
+}
+
+/**
+ * Temperaments pull particular traits most of the way to a value, after the budget, so
+ * the rest of the gecko's own nature still shows through. Lazy: slow, drowsy, unbothered
+ * by food. Energetic: quick and tireless. Bold: a fierce hunter that doesn't spook.
+ */
+export type Temperament = 'own' | 'lazy' | 'energetic' | 'bold';
+const TEMPERAMENTS: Record<Exclude<Temperament, 'own'>, Partial<Traits>> = {
+  lazy: { speed: 0.15, endurance: 0.1, aggression: 0.25, metabolism: 0.3 },
+  energetic: { speed: 0.9, endurance: 0.9, metabolism: 0.7, aggression: 0.55 },
+  bold: { aggression: 0.95, awareness: 0.25, speed: 0.6 },
+};
+const TEMPER_PULL = 0.75;
+
+/** Its traits as they act (0..1 each), budget and temperament applied. */
+export function natureOf(raw: Traits, temperament: Temperament = 'own'): Traits {
+  return new TraitEngine(raw, TRAIT_BUDGET, temperament).traits as Traits;
+}
+
+const Curves: Record<string, (t: number) => number> = {
+  linear: (t) => clamp(t, 0, 1),
+  eager: (t) => { const c = clamp(t, 0, 1); return 1 - (1 - c) * (1 - c); },
+  lazy: (t) => { const c = clamp(t, 0, 1); return c * c; },
+  step3: (t) => { const c = clamp(t, 0, 1); return c < 0.33 ? 0 : c < 0.66 ? 0.5 : 1; },
+};
+
+// "source → parameter": curve and output range. Entries for the same parameter sum.
+const INFLUENCE_MAP: Record<string, { curve: string; range: [number, number] }> = {
+  'speed → baseSpeed': { curve: 'linear', range: [0.5, 2.5] },
+  'speed → fleeMultiplier': { curve: 'linear', range: [1.4, 3.0] },
+  'speed → fleeDuration': { curve: 'linear', range: [20, 50] },
+  'aggression → huntChance': { curve: 'linear', range: [0.005, 0.035] },
+  'aggression → stalkSpeed': { curve: 'linear', range: [0.15, 0.45] },
+  'awareness → baseSight': { curve: 'linear', range: [40, 160] },
+  'awareness → startleDist': { curve: 'linear', range: [30, 90] },
+  'awareness → startleSpeed': { curve: 'linear', range: [4, 12] },
+  'endurance → baseSleepRate': { curve: 'linear', range: [0.00035, 0.00005] },
+  'endurance → sleepThreshold': { curve: 'linear', range: [0.6, 1.0] },
+  'endurance → idleDuration': { curve: 'linear', range: [30, 90] },
+  'endurance → baskDuration': { curve: 'linear', range: [100, 300] },
+  'endurance → sleepDuration': { curve: 'linear', range: [150, 450] },
+  // Slower than the prototype: in a workspace, food only comes from your writing.
+  'metabolism → hungerDecay': { curve: 'linear', range: [0.0006, 0.0026] },
+  'metabolism → fullnessSlowFactor': { curve: 'linear', range: [0.7, 0.3] },
+  'metabolism → fullnessSleepFactor': { curve: 'linear', range: [0.001, 0.005] },
+  'hunger → sightBonus': { curve: 'lazy', range: [0, 340] },
+  'hunger → eagernessBoost': { curve: 'step3', range: [0.1, 1.0] },
+  'hunger → stalkSpeedBoost': { curve: 'linear', range: [0, 0.3] },
+  'hunger → speedBoost': { curve: 'lazy', range: [0, 1.2] },
+  'hunger → huntChanceBoost': { curve: 'eager', range: [0, 0.03] },
+};
+
+class TraitEngine {
+  traits: Record<string, number> = {};
+  drives: Record<string, number> = { hunger: 0, fullness: 0, sleepiness: 0 };
+  private byOutput: Record<string, { from: string; curve: string; range: [number, number] }[]> = {};
+
+  constructor(raw: Traits, budget: number, temperament: Temperament = 'own') {
+    const entries = Object.entries(raw);
+    const sum = entries.reduce((a, [, v]) => a + v, 0);
+    const scale = sum > 0 ? budget / sum : 1;
+    for (const [k, v] of entries) this.traits[k] = clamp(v * scale, 0, 1);
+    if (temperament !== 'own') for (const [k, v] of Object.entries(TEMPERAMENTS[temperament])) this.traits[k] = lerp(this.traits[k] ?? 0.5, v, TEMPER_PULL);
+    for (const [key, config] of Object.entries(INFLUENCE_MAP)) {
+      const [from, to] = key.split(' → ');
+      (this.byOutput[to] ??= []).push({ from, curve: config.curve, range: config.range });
+    }
+  }
+
+  resolve(output: string): number {
+    const entries = this.byOutput[output];
+    if (!entries) return 0;
+    let total = 0;
+    for (const e of entries) total += lerp(e.range[0], e.range[1], Curves[e.curve](this.traits[e.from] ?? this.drives[e.from] ?? 0));
+    return total;
+  }
+
+  updateDrives(needs: Needs) {
+    this.drives.hunger = clamp(1 - needs.hunger / 100, 0, 1);
+    this.drives.fullness = needs.hunger / 100;
+    this.drives.sleepiness = needs.sleepiness;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STATES & NEEDS
+// ═══════════════════════════════════════════════════════════════════
+
+export const STATE = {
+  IDLE: 'idle',
+  BASKING: 'basking',
+  EXPLORE: 'explore',
+  HUNT: 'hunt',
+  STARTLE: 'startle',
+  FLEE: 'flee',
+  SLEEP: 'sleep',
+  NIBBLE: 'nibble',
+  HIDE: 'hide',
+  HELD: 'held',
+  WATCH: 'watch',
+  INSPECT: 'inspect',
+  LURK: 'lurk',
+  CURIOUS: 'curious',
+  FEAST: 'feast',
+  SCOUT: 'scout',
+  RETREAT: 'retreat',
+  PLAY: 'play',
+  NAP: 'nap',
+  PRANK: 'prank',
+  SEARCH: 'search',
+} as const;
+export type State = (typeof STATE)[keyof typeof STATE];
+
+class Needs {
+  hunger = 50;
+  sleepiness = 0;
+  constructor(public engine: TraitEngine) {}
+
+  get hungerFactor() { return clamp(1 - this.hunger / 100, 0, 1); }
+  get fullness() { return this.hunger / 100; }
+
+  update(state: State) {
+    this.engine.updateDrives(this);
+    this.hunger = Math.max(0, this.hunger - this.engine.resolve('hungerDecay'));
+    if (state === STATE.SLEEP) this.sleepiness = Math.max(0, this.sleepiness - 0.003);
+    else {
+      const bonus = this.fullness > 0.7 ? (this.fullness - 0.7) * this.engine.resolve('fullnessSleepFactor') : 0;
+      this.sleepiness = Math.min(1, this.sleepiness + this.engine.resolve('baseSleepRate') + bonus);
+    }
+  }
+
+  feed(amount: number) { this.hunger = Math.min(100, this.hunger + amount); }
+  canSleep() {
+    const threshold = this.engine.resolve('sleepThreshold');
+    return (this.sleepiness > threshold && this.hunger > 20) || (this.hunger > 90 && this.sleepiness > 0.3);
+  }
+  wantsSleepSoon() { return this.sleepiness > this.engine.resolve('sleepThreshold') - 0.1; }
+  /** Bugs are rare in a workspace: it spots them from most of the window, hungry ones furthest. */
+  get sightRange() { return 150 + (this.engine.resolve('baseSight') + this.engine.resolve('sightBonus')) * S * 2; }
+  get huntEagerness() { return this.engine.resolve('eagernessBoost'); }
+  get fullnessSlowdown() { return 1 - this.fullness * this.engine.resolve('fullnessSlowFactor'); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SUB-BEHAVIOURS (the rest — tongue, blink, breathing, tail — live on the Body)
+// ═══════════════════════════════════════════════════════════════════
+
+class HeadLookBehavior {
+  offset = 0; target = 0;
+  look() { this.target = (Math.random() - 0.5) * 1.2; }
+  lookAt(rel: number) { this.target = clamp(rel, -0.9, 0.9); }
+  /** Whip round to look, at once. */
+  snapTo(rel: number) { this.target = this.offset = clamp(rel, -0.9, 0.9); }
+  update() {
+    this.offset = lerp(this.offset, this.target, 0.08);
+    if (Math.abs(this.offset - this.target) < 0.02) this.target = lerp(this.target, 0, 0.05);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STATE HANDLERS — each state defines enter() and update()
+// ═══════════════════════════════════════════════════════════════════
+// update() returns the target speed (art px per tick) and optionally a transition.
+
+type Result = { targetSpeed: number; transition?: State };
+interface Handler { enter(g: Personality): void; update(g: Personality): Result; }
+
+const StateHandlers: Record<State, Handler> = {
+  [STATE.IDLE]: {
+    enter(g) {
+      const urgency = Math.max(g.needs.hungerFactor * 0.7, g.needs.fullness > 0.7 ? (g.needs.fullness - 0.7) * 2 : 0);
+      const baseDur = g.traits.resolve('idleDuration');
+      g.stateData = {
+        duration: (baseDur + Math.random() * baseDur * 2) * (1 - urgency),
+        nextLookTime: 20 + Math.random() * 40,
+        nextTongueTime: 40 + Math.random() * 80,
+        nextBlinkTime: 30 + Math.random() * 60,
+      };
+      // Now and then, a push-up display while it stands there.
+      if (Math.random() < 0.15) g.schedulePushups(10 + Math.random() * 30);
+    },
+    update(g) {
+      const t = g.stateTimer, d = g.stateData;
+      if (g.pushups()) return { targetSpeed: 0 };
+      if (t > d.nextLookTime) { g.headLook.look(); d.nextLookTime = t + 30 + Math.random() * 50; }
+      if (t > d.nextTongueTime) { g.flick(); d.nextTongueTime = t + 50 + Math.random() * 100; }
+      if (t > d.nextBlinkTime) { g.blink(); d.nextBlinkTime = t + 30 + Math.random() * 60; }
+      if (t > d.duration) {
+        const homeDist = g.distTo(g.homeX, g.homeY);
+        if (g.needs.canSleep()) return { targetSpeed: 0.05 * S, transition: homeDist < 60 * S ? STATE.SLEEP : STATE.EXPLORE };
+        if (g.letter) return { targetSpeed: 0.05 * S, transition: STATE.NIBBLE };
+        if (g.wantsCover()) return { targetSpeed: 0.05 * S, transition: STATE.HIDE };
+        if (g.wantsToPlay()) return { targetSpeed: 0.05 * S, transition: STATE.PLAY };
+        if (g.wantsNap()) return { targetSpeed: 0.05 * S, transition: STATE.NAP };
+        if (g.wantsSnack()) return { targetSpeed: 0.05 * S, transition: STATE.PRANK };
+        if (g.wantsMischief()) return { targetSpeed: 0.05 * S, transition: STATE.PRANK };
+        const nearHome = homeDist < 80 * S;
+        const r = Math.random();
+        if (nearHome && g.needs.fullness > 0.6 && r < g.needs.fullness) return { targetSpeed: 0.05 * S, transition: STATE.BASKING };
+        if (r < 0.4) return { targetSpeed: 0.05 * S, transition: STATE.EXPLORE };
+        if (r < 0.7) return { targetSpeed: 0.05 * S, transition: STATE.BASKING };
+        return { targetSpeed: 0.05 * S, transition: STATE.EXPLORE };
+      }
+      return { targetSpeed: 0.05 * S };
+    },
+  },
+
+  // Basking where it is; or, with a picture in a note close by, off to lie on it first —
+  // a warm rock — and bask there a good while longer, eyes half shut.
+  [STATE.BASKING]: {
+    enter(g) {
+      const nearHome = g.distTo(g.homeX, g.homeY) < 80 * S;
+      const baseDur = g.traits.resolve('baskDuration');
+      const fullBonus = nearHome && g.needs.hunger > 70 ? g.needs.fullness * baseDur * 1.5 : 0;
+      g.stateData = { duration: baseDur + Math.random() * baseDur * 1.5 + fullBonus, nextLookTime: 60 + Math.random() * 80, nextBlinkTime: 40 + Math.random() * 50 };
+      const warm = g.petted ? null : g.warmSpot(360);
+      if (warm) { g.stateData.warm = warm; g.stateData.going = true; g.stateData.leg = 0; g.planRoute(warm.x, warm.y); return; }
+      if (!g.petted) g.c.log?.('bask', 'Basked');
+      if (Math.random() < 0.2) g.schedulePushups(40 + Math.random() * Math.max(0, g.stateData.duration - 120));
+    },
+    update(g) {
+      const t = g.stateTimer, d = g.stateData;
+      if (d.going) {
+        const w = d.warm, head = g.head;
+        if (dist(head.x, head.y, w.x, w.y) < 6 || ++d.leg > 700) {
+          d.going = false; d.onWarm = true;
+          d.duration = t + d.duration * 1.8;
+          g.c.log?.('bask', 'Basked on a picture');
+          return { targetSpeed: 0 };
+        }
+        const wp = g.waypoint(w.x, w.y);
+        g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+        return { targetSpeed: g.speed * 0.9 };
+      }
+      if (g.pushups()) return { targetSpeed: 0 };
+      if (g.petted) d.duration = Math.max(d.duration, t + 60);
+      if (t > d.nextLookTime && !g.petted) { g.headLook.look(); d.nextLookTime = t + 80 + Math.random() * 100; }
+      if (t > d.nextBlinkTime) { g.blink(); d.nextBlinkTime = t + 40 + Math.random() * 60; }
+      if (t > d.duration) {
+        if (g.needs.canSleep()) return { targetSpeed: 0, transition: g.distTo(g.homeX, g.homeY) < 60 * S ? STATE.SLEEP : STATE.EXPLORE };
+        if (g.letter) return { targetSpeed: 0, transition: STATE.NIBBLE };
+        if (g.wantsNap()) return { targetSpeed: 0, transition: STATE.NAP };
+        return { targetSpeed: 0, transition: Math.random() < 0.6 ? STATE.EXPLORE : STATE.IDLE };
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  [STATE.EXPLORE]: {
+    enter(g) {
+      g.pickDestination();
+      g.stateData = { investigateTime: 0, investigating: false, wallFollowing: false, wallFollowTimer: 0, wallAngle: 0, lookCount: 0, maxLooks: 0 };
+    },
+    update(g) {
+      const head = g.head;
+      const d = dist(head.x, head.y, g.destX, g.destY);
+      const sd = g.stateData;
+
+      // Near a seam, sometimes run along it for a while. Panels put seams everywhere, so
+      // this is rarer than the original's walls, and never right before arriving.
+      if (!sd.wallFollowing && !sd.investigating && !g.entering && d > 40 * S && Math.random() < 0.005) {
+        const seam = g.nearestSeam(40 * S);
+        if (seam) {
+          sd.wallFollowing = true;
+          sd.wallFollowTimer = 60 + Math.random() * 120;
+          const along = Math.atan2(seam.y2 - seam.y1, seam.x2 - seam.x1);
+          sd.wallAngle = Math.abs(angleDiff(g.angle, along)) < Math.PI / 2 ? along : along + Math.PI;
+        }
+      }
+
+      let targetSpeed: number;
+      if (sd.wallFollowing) {
+        g.targetAngle = sd.wallAngle;
+        targetSpeed = g.speed * 0.7;
+        sd.wallFollowTimer--;
+        if (sd.wallFollowTimer % 30 === 0) g.flick();
+        if (sd.wallFollowTimer <= 0 || d < 15 * S) sd.wallFollowing = false;
+      } else if (!sd.investigating) {
+        const wp = g.waypoint(g.destX, g.destY);
+        g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+        // The explore rhythm: hesitate, dash, slow — over and over.
+        const burstPhase = g.burstTimer % 80;
+        if (burstPhase < 15) targetSpeed = 0.15 * S;
+        else if (burstPhase < 55) targetSpeed = g.speed;
+        else targetSpeed = 0.3 * S;
+        g.targetAngle += Math.sin(g.burstTimer * 0.08) * 0.15;
+        // Something just popped up: hurry, no dawdling.
+        if (sd.forLure && g.lure) targetSpeed = g.speed * 1.5;
+
+        // Hurrying back into view after being scrolled off the page.
+        if (sd.hurry) targetSpeed = g.speed * 1.6;
+        if (d < 15 * S) {
+          // Came over to see what popped up: if it's still there, pounce on it.
+          if (sd.forLure && g.lure) return { targetSpeed, transition: STATE.HUNT };
+          if ((g.needs.canSleep() || g.forcedNap) && g.distTo(g.homeX, g.homeY) < 60 * S) return { targetSpeed, transition: STATE.SLEEP };
+          sd.investigating = true; sd.investigateTime = 0; sd.lookCount = 0;
+          sd.maxLooks = 2 + Math.floor(Math.random() * 3);
+        }
+      } else {
+        // Arrived: look about, taste the air, blink.
+        targetSpeed = 0.05 * S;
+        sd.investigateTime++;
+        if (sd.investigateTime % 25 === 10) { g.headLook.look(); sd.lookCount++; }
+        if (sd.investigateTime % 40 === 20) {
+          // Words nearby get a taste: turn to them first.
+          const w = g.c.world.nearestText(head.x, head.y, 12);
+          if (w) g.headLook.lookAt(angleDiff(g.angle, Math.atan2(w.y - head.y, w.x - head.x)));
+          g.flick();
+        }
+        if (sd.investigateTime % 35 === 5) g.blink();
+        if (sd.lookCount >= sd.maxLooks) {
+          if (g.letter) return { targetSpeed, transition: STATE.NIBBLE };
+          if (g.wantsCover()) return { targetSpeed, transition: STATE.HIDE };
+          const nearHome = g.distTo(g.homeX, g.homeY) < 80 * S;
+          if (nearHome && g.needs.fullness > 0.7) return { targetSpeed, transition: Math.random() < 0.8 ? STATE.BASKING : STATE.IDLE };
+          const r = Math.random();
+          if (r < 0.5) return { targetSpeed, transition: STATE.EXPLORE };
+          if (r < 0.8) return { targetSpeed, transition: STATE.IDLE };
+          return { targetSpeed, transition: STATE.BASKING };
+        }
+      }
+      if (!g.entering) g.steerFromWalls(25 * S, 0.3, !sd.wallFollowing);
+      return { targetSpeed };
+    },
+  },
+
+  [STATE.HUNT]: {
+    enter(g) { g.stateData = { phase: 'stalk', stalkTime: 0, lungeTimer: 0, lure: !g.targetBug && !!g.lure }; },
+    update(g) {
+      const head = g.head;
+      const bug = g.targetBug;
+      const p = g.pointer;
+      const sd = g.stateData;
+      // Prey is a bug, or a lure (a notice, something dragged), or the pointer.
+      const lure = !bug && sd.lure ? g.lure : null;
+      const target = bug ?? lure ?? p;
+      const huntX = target ? target.x : head.x;
+      const huntY = target ? target.y : head.y;
+      const huntDist = dist(head.x, head.y, huntX, huntY);
+      const huntLost = bug ? !g.preyAlive(bug) : sd.lure ? !g.lure : !p || huntDist > 120 * S;
+
+      if (sd.phase === 'stalk') {
+        // Spotted from afar: go over first; the stalk starts within striking range.
+        if (huntDist > 60 && !huntLost) {
+          const wp = g.waypoint(huntX, huntY);
+          g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+          return { targetSpeed: g.speed * 1.2 };
+        }
+        g.targetAngle = Math.atan2(huntY - head.y, huntX - head.x);
+        let targetSpeed = (g.traits.resolve('stalkSpeed') + g.traits.resolve('stalkSpeedBoost')) * S;
+        sd.stalkTime++;
+        if (sd.stalkTime % 40 > 30) targetSpeed = 0;
+        // A flying insect is watched, not struck.
+        const strikeable = !bug || bug.catchable;
+        if (!strikeable && huntDist < 50 * S) targetSpeed = 0;
+        if (strikeable && (huntDist < 40 * S || sd.stalkTime > 120)) { sd.phase = bug ? 'ready' : 'lunge'; sd.lungeTimer = 0; sd.readyFor = 18 + Math.random() * 24; }
+        if (huntLost) return { targetSpeed, transition: STATE.IDLE };
+        return { targetSpeed };
+      }
+
+      g.targetAngle = Math.atan2(huntY - head.y, huntX - head.x);
+      sd.lungeTimer++;
+      if (sd.phase === 'ready') {
+        // The wind-up: frozen, head locked on, tail lashing, hips wiggling — then go.
+        g.body.wiggle = 1;
+        if (huntLost) { g.body.wiggle = 0; return { targetSpeed: 0, transition: STATE.IDLE }; }
+        if (huntDist > 30) { g.body.wiggle = 0; sd.phase = 'stalk'; return { targetSpeed: 0 }; }
+        if (sd.lungeTimer > sd.readyFor) {
+          g.body.wiggle = 0;
+          sd.phase = 'lunge'; sd.lungeTimer = 0;
+          // Explosive: no easing in.
+          g.currentSpeed = g.c.opts.reducedMotion ? g.speed : g.speed * 3.5;
+          g.body.mouthTarget = 1;
+        }
+        return { targetSpeed: 0 };
+      }
+      // The strike: a burst straight at it, jaws gaping.
+      g.body.mouthTarget = 1;
+      const strike = g.c.opts.reducedMotion ? g.speed : bug ? g.speed * 3.5 : huntDist < 30 * S ? g.speed * 0.8 : g.speed * 2;
+      if (huntLost || sd.lungeTimer > (bug ? 30 : 60)) {
+        // Missed: it skids to a stop and looks about, as if it meant to.
+        g.body.mouthTarget = 0;
+        g.flick();
+        g.headLook.look();
+        return { targetSpeed: 0, transition: STATE.IDLE };
+      }
+      return { targetSpeed: strike };
+    },
+  },
+
+  // Startled, as a lizard is: a flinch — it jumps, a quick hop straight up off all four
+  // feet and down again, head whipping round to the threat, tail lashing, a "!" over its
+  // head — then dead still for a beat, eyes on it (a jumpy one holds it less), before it
+  // bolts. A mild scare (or reduced motion) skips the jump.
+  [STATE.STARTLE]: {
+    enter(g) {
+      const head = g.head, aware = g.traits.traits.awareness ?? 0.5;
+      g.stateData = { freeze: 8 + (1 - aware) * 14 + Math.random() * 8 };
+      g.headLook.snapTo(angleDiff(g.angle, Math.atan2(g.threatY - head.y, g.threatX - head.x)));
+      g.currentSpeed = 0;
+      g.alarm = 40;
+      g.c.log?.('startle', 'Was startled');
+    },
+    update(g) {
+      const t = g.stateTimer, sd = g.stateData, b = g.body;
+      // Frozen: not turning, not stepping; only the head moves, to keep its eyes on it.
+      g.targetAngle = g.angle;
+      g.currentSpeed = 0;
+      // The jump: up fast, and down a touch slower.
+      if (!g.mildScare) b.hop = t < 3 ? 2.4 * (t / 3) : t < 8 ? 2.4 * (1 - smoothstep((t - 3) / 5)) : 0;
+      g.headLook.lookAt(angleDiff(g.angle, Math.atan2(g.threatY - g.head.y, g.threatX - g.head.x)));
+      if (t > 8 + sd.freeze) {
+        b.hop = 0;
+        // Jumped at a noise, not at something coming for it: a long look, and it settles.
+        if (sd.stay) { g.watching = { x: g.threatX, y: g.threatY }; return { targetSpeed: 0, transition: STATE.WATCH }; }
+        return { targetSpeed: 0, transition: STATE.FLEE };
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // Bolting: off at full tilt from the first stride, away from the threat in sharp
+  // zig-zag jinks; then it pulls up, looks back at where the scare came from, tastes the
+  // air, and (a bold one, sometimes) bobs a few push-ups at it before it settles.
+  [STATE.FLEE]: {
+    enter(g) {
+      const baseFlee = g.traits.resolve('fleeDuration');
+      const head = g.head, away = Math.atan2(head.y - g.threatY, head.x - g.threatX);
+      g.stateData = { duration: (baseFlee + Math.random() * baseFlee) * (g.mildScare ? 0.5 : 1), away, jink: 0, nextJink: 0, phase: 'run', look: 0, lookFor: 0 };
+      g.targetAngle = away + (Math.random() - 0.5) * 0.6;
+      g.angle = lerpAngle(g.angle, g.targetAngle, 0.6);
+      if (!g.mildScare && !g.c.opts.reducedMotion) g.currentSpeed = g.speed * g.traits.resolve('fleeMultiplier');
+    },
+    update(g) {
+      const sd = g.stateData, t = g.stateTimer, head = g.head;
+      // Bolt for the nearest panel leading away from the threat, if there is one.
+      if (HIDING && t === 1 && g.findCover(110, { x: g.threatX, y: g.threatY })) { g.hideFast = true; return { targetSpeed: g.speed, transition: STATE.HIDE }; }
+      const mild = g.mildScare || g.c.opts.reducedMotion;
+      if (sd.phase === 'look') {
+        // Pulled up short: a look back over its shoulder at where it came from.
+        g.currentSpeed *= 0.8;
+        g.targetAngle = g.angle;
+        g.headLook.lookAt(angleDiff(g.angle, Math.atan2(g.threatY - head.y, g.threatX - head.x)));
+        if (++sd.look === 20) g.flick();
+        if (sd.look > sd.lookFor) {
+          const bold = (g.traits.traits.aggression ?? 0.5) > 0.55;
+          if (bold && !mild && Math.random() < 0.5) { g.enterState(STATE.IDLE); g.schedulePushups(6); return { targetSpeed: 0 }; }
+          return { targetSpeed: 0, transition: STATE.IDLE };
+        }
+        return { targetSpeed: 0 };
+      }
+      const mult = mild ? 1.2 : g.traits.resolve('fleeMultiplier');
+      // Sharp jinks one way and the other, every few strides.
+      if (!mild && t >= sd.nextJink) {
+        sd.jink = (sd.jink > 0 ? -1 : 1) * (0.3 + Math.random() * 0.4);
+        sd.nextJink = t + 12 + Math.random() * 10;
+      }
+      g.targetAngle = sd.away + (mild ? Math.sin(g.burstTimer * 0.3) * 0.15 : sd.jink);
+      g.steerFromWalls(20 * S, 0.5);
+      // Keep running away from it, even when a wall turns it.
+      sd.away = lerpAngle(sd.away, g.targetAngle, 0.05);
+      if (t > sd.duration) { sd.phase = 'look'; sd.look = 0; sd.lookFor = 45 + Math.random() * 45; return { targetSpeed: 0 }; }
+      // Easing off over the last few strides.
+      const left = sd.duration - t;
+      return { targetSpeed: g.speed * mult * (left < 15 ? 0.4 + 0.6 * (left / 15) : 1) };
+    },
+  },
+
+  [STATE.SLEEP]: {
+    enter(g) {
+      g.body.curlStyle = 'coil';
+      const baseSleep = g.traits.resolve('sleepDuration');
+      g.stateData = { duration: baseSleep + Math.random() * baseSleep * 1.3, nextPeekTime: 60 + Math.random() * 100, peekUntil: 0, wakeAt: 0, asleepAt: 0 };
+      g.sleepPeeking = false;
+      g.body.curlDir = Math.random() > 0.5 ? 1 : -1;
+    },
+    update(g) {
+      const t = g.stateTimer, sd = g.stateData;
+      // Now and then it peeks out from under its lids (not while it's dropping off).
+      if (sd.asleepAt && t - sd.asleepAt > 300 && t > sd.nextPeekTime) {
+        g.sleepPeeking = true;
+        sd.peekUntil = t + 36 + Math.random() * 24;
+        sd.nextPeekTime = t + 80 + Math.random() * 150;
+        if (Math.random() < 0.5) g.headLook.look();
+      }
+      if (g.sleepPeeking && t > sd.peekUntil) g.sleepPeeking = false;
+      // Curled up with its eyes shut, it's asleep: and once it is, it stays asleep a good
+      // while (a pointer coming at it still wakes it with a start).
+      if (!sd.asleepAt && (g.dozing || t > 240)) { sd.asleepAt = t; g.c.log?.('sleep', 'Fell asleep'); }
+      if (!sd.asleepAt || t - sd.asleepAt < MIN_SLEEP) return { targetSpeed: 0 };
+      // While you're away it stays asleep; when you come back it wakes shortly after.
+      if (g.userIdle) { sd.duration = Math.max(sd.duration, t + 60); g.needs.sleepiness = Math.max(g.needs.sleepiness, 0.5); sd.wakeAt = 0; }
+      else if (g.forcedNap) {
+        if (!sd.wakeAt) sd.wakeAt = t + 20 + Math.random() * 30;
+        if (t > sd.wakeAt) { g.forcedNap = false; g.sleepPeeking = false; return { targetSpeed: 0, transition: STATE.IDLE }; }
+      }
+      if (!g.userIdle && !g.forcedNap && (t > sd.duration || g.needs.sleepiness < 0.1)) {
+        g.sleepPeeking = false;
+        return { targetSpeed: 0, transition: STATE.IDLE };
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  [STATE.NIBBLE]: {
+    enter(g) {
+      g.stateData = { phase: 'approach', timer: 0, flicks: 0 };
+      if (g.letterAt) g.planRoute(g.letterAt.x, g.letterAt.y);
+    },
+    update(g) {
+      const sd = g.stateData, head = g.head;
+      sd.timer++;
+      if (sd.phase === 'grab' || sd.phase === 'carry' || sd.phase === 'eat') return stealing(g);
+      const at = g.letterAt;
+      if (!at || (g.typing && sd.phase === 'approach')) { g.dropLetter(); return { targetSpeed: 0.05 * S, transition: STATE.IDLE }; }
+      // Measured from the tip of its snout as drawn (up on a paragraph it is drawn lifted a
+      // little up the screen), so it is the snout that meets the letter, not the whole head.
+      const tip = g.snout();
+      const d = dist(tip.x, tip.y, at.x, at.y);
+      const toLetter = Math.atan2(at.y - tip.y, at.x - tip.x);
+      if (sd.phase === 'approach') {
+        const wp = g.waypoint(at.x, at.y);
+        g.targetAngle = d < 20 * S ? toLetter : Math.atan2(wp.y - head.y, wp.x - head.x);
+        const burstPhase = g.burstTimer % 80;
+        let targetSpeed = burstPhase < 15 ? 0.15 * S : burstPhase < 55 ? g.speed * 0.8 : 0.3 * S;
+        // Creep the last few pixels, and stop dead with the snout touching it.
+        if (d < 20 * S) targetSpeed = Math.min(targetSpeed, 0.3 * S);
+        if (d < 6) targetSpeed = Math.min(targetSpeed, 0.12 * S);
+        if (d < 1.8) { sd.phase = 'taste'; sd.timer = 0; g.currentSpeed = 0; return { targetSpeed: 0 }; }
+        if (sd.timer > 1800) { g.dropLetter(); return { targetSpeed, transition: STATE.IDLE }; }
+        return { targetSpeed };
+      }
+      g.headLook.lookAt(angleDiff(g.angle, toLetter));
+      // Taste it first, a couple of times, then snatch it out of the word. Sometimes it
+      // is stuck fast and takes a struggle to pull free.
+      if (sd.timer % 30 === 5 && sd.flicks < 2) { g.flick(); sd.flicks++; }
+      if (sd.timer > 75) {
+        const stuck = Math.random() < g.stuckChance;
+        sd.slot = { ...at };
+        sd.toLetter = toLetter;
+        if (!g.stealLetter(stuck)) return { targetSpeed: 0, transition: STATE.IDLE };
+        sd.phase = 'grab'; sd.timer = 0;
+        sd.stuck = stuck;
+        sd.len = stuck ? 70 + Math.random() * 90 : 12;
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // Something opened over the workspace (a modal, the command palette): freeze and watch it.
+  [STATE.WATCH]: {
+    enter(g) { g.stateData = { nextBlink: 40 }; g.currentSpeed = 0; },
+    update(g) {
+      const w = g.watching, head = g.head, t = g.stateTimer;
+      if (w) g.headLook.lookAt(angleDiff(g.angle, Math.atan2(w.y - head.y, w.x - head.x)));
+      if (t > g.stateData.nextBlink) { g.blink(); g.stateData.nextBlink = t + 60 + Math.random() * 90; }
+      // It went away (or this has gone on long enough): relax.
+      if (!w || t > 3600) { g.watching = null; g.flick(); return { targetSpeed: 0, transition: STATE.IDLE }; }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // Stalking the caret as you type, or the pointer when it rests nearby: drawn to it and
+  // a little afraid of it. It creeps in, stop-start, head locked on it, tail tip twitching
+  // when it freezes, and keeps a little way off; if it comes too close it startles and
+  // scurries back, watches a moment, and starts creeping in again.
+  [STATE.LURK]: {
+    enter(g) { g.stateData = { phase: 'stalk', spot: null, anchor: null, timer: 0, phaseTimer: 0, target: g.lurkTarget }; },
+    update(g) {
+      const sd = g.stateData, head = g.head, w = g.c.world;
+      sd.timer++;
+      sd.phaseTimer++;
+      const caret = sd.target === 'caret';
+      const k = caret ? w.caret ?? w.lastCaret : g.pointer;
+      // You stopped typing (the close look at the new words is fresh ink's job), the pointer
+      // went away, or it has lost interest.
+      const gone = !k || (caret ? !g.c.input.typedWithin(g.c.now, 4000) : dist(head.x, head.y, k.x, k.y) > CURIOUS_RADIUS);
+      if (gone || sd.timer > (caret ? 6000 : 2400)) {
+        if (caret) g.lurkCooldown = 300; else g.curiousCooldown = 900;
+        return { targetSpeed: 0.05 * S, transition: STATE.IDLE };
+      }
+      const near = dist(head.x, head.y, k.x, k.y);
+      const toCaret = Math.atan2(k.y - head.y, k.x - head.x);
+
+      if (sd.phase === 'scurry') {
+        // Away, fast, to a safer distance.
+        const wp = g.waypoint(sd.spot.x, sd.spot.y);
+        g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+        if (dist(head.x, head.y, sd.spot.x, sd.spot.y) < 5 || sd.phaseTimer > 70) { sd.phase = 'wary'; sd.phaseTimer = 0; sd.waryFor = 50 + Math.random() * 50; g.currentSpeed = 0; }
+        return { targetSpeed: g.speed * 2.2 };
+      }
+      if (sd.phase === 'wary') {
+        // Frozen, head turned to watch it, before it dares to creep back in. (It turns its
+        // head rather than shuffling round, which in a tight spot tied it in knots.)
+        g.headLook.lookAt(angleDiff(g.angle, toCaret));
+        if (sd.phaseTimer > sd.waryFor) { sd.phase = 'stalk'; sd.phaseTimer = 0; sd.spot = null; }
+        return { targetSpeed: 0 };
+      }
+
+      // Too close, or right in the path of the line being written: startle and scurry back.
+      // Out in the open, a pointer that comes slowly is allowed close: it holds still,
+      // watching, and lets itself be petted. Anywhere near the words, or if it comes in a
+      // rush, it is too much.
+      const gentle = !caret && !g.nearText() && g.cursorSpeed < 2 * S;
+      if (near < 20 && gentle) { sd.frozen = true; return { targetSpeed: 0 }; }
+      if (near < 20 || (caret && Math.abs(head.y - k.y) < 7 && Math.abs(head.x - k.x) < 40)) {
+        g.scurryFrom(k);
+        return { targetSpeed: g.speed * 2.2 };
+      }
+      // A spot a little way off, re-chosen as the caret moves along.
+      if (!sd.spot || dist(sd.anchor.x, sd.anchor.y, k.x, k.y) > 10) {
+        sd.spot = g.lurkSpot(k, caret);
+        sd.anchor = { ...k };
+        g.planRoute(sd.spot.x, sd.spot.y);
+      }
+      g.headLook.lookAt(angleDiff(g.angle, toCaret));
+      const d = dist(head.x, head.y, sd.spot.x, sd.spot.y);
+      if (g.arrived(sd)) return { targetSpeed: 0 };
+      const wp = g.waypoint(sd.spot.x, sd.spot.y);
+      g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+      // From afar it hurries closer; falling behind as you type along, it catches up at a
+      // walk; within striking range it stalks: creep, freeze, creep.
+      if (d > 50) { sd.frozen = false; return { targetSpeed: g.speed * 1.3 }; }
+      if (d > 20) { sd.frozen = false; return { targetSpeed: g.speed }; }
+      sd.frozen = sd.phaseTimer % 60 >= 34;
+      return { targetSpeed: sd.frozen ? 0 : 0.8 * S };
+    },
+  },
+
+  // The pointer is resting some way off: mild interest. It turns to look, and drifts a
+  // little closer now and then, unhurried; close enough, it stalks it as it does the caret.
+  [STATE.CURIOUS]: {
+    enter(g) { g.stateData = { spot: null, anchor: null, timer: 0, leaveAt: 1200 + Math.random() * 1200, keep: STALK_RADIUS + 12, waited: 0 }; },
+    update(g) {
+      const sd = g.stateData, head = g.head, p = g.pointer, w = g.c.world;
+      sd.timer++;
+      if (!p || sd.timer > sd.leaveAt) { g.curiousCooldown = 600 + Math.random() * 900; return { targetSpeed: 0.05 * S, transition: STATE.IDLE }; }
+      const d = dist(head.x, head.y, p.x, p.y);
+      if (d > CURIOUS_RADIUS * 1.2) return { targetSpeed: 0.05 * S, transition: STATE.IDLE };
+      if (d < STALK_RADIUS) { g.lurkTarget = 'pointer'; return { targetSpeed: 0, transition: STATE.LURK }; }
+      const toP = Math.atan2(p.y - head.y, p.x - head.x);
+      g.headLook.lookAt(angleDiff(g.angle, toP));
+      // A spot a little nearer, kept to as the pointer moves.
+      if (!sd.spot || dist(sd.anchor.x, sd.anchor.y, p.x, p.y) > 15) {
+        const a = Math.atan2(head.y - p.y, head.x - p.x) + (Math.random() - 0.5) * 0.6, r = sd.keep + Math.random() * 6;
+        sd.spot = w.clampToBounds(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r, 8);
+        sd.anchor = { ...p };
+        g.planRoute(sd.spot.x, sd.spot.y);
+      }
+      if (g.arrived(sd)) {
+        // Having watched a while, it dares a little closer — until it is close enough to stalk.
+        if (++sd.waited > 120 + Math.random() * 60) { sd.waited = 0; sd.keep -= 12; sd.spot = null; }
+        if (sd.timer % 200 === 100) g.flick();
+        return { targetSpeed: 0 };
+      }
+      // Unhurried: a few steps, a look, a few more.
+      const wp = g.waypoint(sd.spot.x, sd.spot.y);
+      g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+      if (sd.timer % 200 === 150) g.flick();
+      return { targetSpeed: sd.timer % 100 < 50 ? g.speed * 0.6 : 0 };
+    },
+  },
+
+  // You stopped typing: come and sniff along the words you just wrote.
+  [STATE.INSPECT]: {
+    enter(g) {
+      g.stateData = { phase: 'go', timer: 0, sniffs: 0 };
+      const k = g.inkAt;
+      if (k) g.planRoute(k.x, k.y);
+    },
+    update(g) {
+      const sd = g.stateData, k = g.inkAt, head = g.head;
+      sd.timer++;
+      // Back to typing: leave it be.
+      if (!k || g.c.input.typedWithin(g.c.now, 300)) return { targetSpeed: 0.05 * S, transition: STATE.IDLE };
+      const tip = g.snout();
+      const d = dist(tip.x, tip.y, k.x, k.y);
+      if (sd.phase === 'go') {
+        const wp = g.waypoint(k.x, k.y);
+        g.targetAngle = d < 12 ? Math.atan2(k.y - tip.y, k.x - tip.x) : Math.atan2(wp.y - head.y, wp.x - head.x);
+        const burstPhase = g.burstTimer % 80;
+        let targetSpeed = burstPhase < 15 ? 0.15 * S : burstPhase < 55 ? g.speed : 0.3 * S;
+        if (d < 12) targetSpeed = Math.min(targetSpeed, 0.15 * S);
+        if (d < 3) { sd.phase = 'sniff'; sd.timer = 0; g.currentSpeed = 0; }
+        if (sd.timer > 1200) return { targetSpeed, transition: STATE.IDLE };
+        return { targetSpeed };
+      }
+      // Work back along the new words, nose down, tasting them as it goes.
+      g.targetAngle = Math.PI;
+      if (sd.timer % 22 === 8) { g.flick(); sd.sniffs++; }
+      g.headLook.lookAt(Math.sin(sd.timer * 0.15) * 0.35);
+      if (sd.sniffs >= 4 + Math.floor(Math.random() * 3) || sd.timer > 260) {
+        g.inkAt = null;
+        return { targetSpeed: 0, transition: STATE.IDLE };
+      }
+      return { targetSpeed: sd.timer % 22 < 10 ? 0 : 0.12 * S };
+    },
+  },
+
+  // Caught it. Snap the jaws shut, shake it, chew, gulp it down (a lump passes down the
+  // throat), then a lick and a contented blink.
+  [STATE.FEAST]: {
+    enter(g) {
+      g.stateData = { t: 0 };
+      g.currentSpeed = 0;
+      g.body.wiggle = 0;
+      g.body.mouth = 1;
+      g.body.mouthTarget = 0;
+      g.headLook.lookAt(Math.random() < 0.5 ? -0.4 : 0.4);
+    },
+    update(g) {
+      const sd = g.stateData, b = g.body, t = ++sd.t, big = g.preyKind === 'cricket';
+      const SHAKE = 8, CHEW = SHAKE + 26, GULP = CHEW + (big ? 70 : 45), DONE = GULP + 36;
+      if (t < SHAKE) return { targetSpeed: 0 };
+      if (t < CHEW) {
+        // A quick kill-shake, side to side.
+        g.headLook.lookAt(Math.sin((t - SHAKE) * 1.1) * 0.6);
+        return { targetSpeed: 0 };
+      }
+      if (t < GULP) {
+        // Chewing, jaws working, bits dropping.
+        b.mouthTarget = Math.floor((t - CHEW) / 6) % 2 === 0 ? 0.55 : 0;
+        g.headLook.lookAt(Math.sin((t - CHEW) * 0.35) * 0.15);
+        if ((t - CHEW) % 16 === 8) { const s = g.snout(); g.c.particles.burst(s.x, s.y, g.c.pal.ink, 1, 5); }
+        return { targetSpeed: 0 };
+      }
+      if (t < DONE) {
+        // Gulp: the mouthful goes down.
+        b.mouthTarget = 0;
+        b.gulp = 2 + ((t - GULP) / (DONE - GULP)) * 11;
+        return { targetSpeed: 0 };
+      }
+      b.gulp = -1;
+      b.flickTongue('lick');
+      g.blink();
+      return { targetSpeed: 0, transition: g.needs.fullness > 0.6 ? STATE.BASKING : STATE.IDLE };
+    },
+  },
+
+  // A new note: it goes exploring what's in it — up over the paragraphs, headings and
+  // blocks, top to bottom or bottom to top from whichever end is nearer — stopping on each
+  // to look about and taste the words, before settling in.
+  [STATE.SCOUT]: {
+    enter(g) {
+      g.stateData = { stops: g.scoutStops, i: 0, pause: 0, leg: 0 };
+      g.flick();
+      g.c.log?.('explore', 'Explored');
+    },
+    update(g) {
+      const sd = g.stateData, head = g.head;
+      if (sd.pause > 0) {
+        // Sniffing the words: head dipping about, tongue going.
+        if (sd.pause % 22 === 0) g.flick();
+        if (sd.pause % 30 === 15) g.headLook.look();
+        if (--sd.pause <= 0) { sd.pause = 0; sd.i++; sd.leg = 0; }
+        return { targetSpeed: 0 };
+      }
+      if (sd.i >= sd.stops.length) return { targetSpeed: 0, transition: STATE.IDLE };
+      const c = sd.stops[sd.i];
+      if (dist(head.x, head.y, c.x, c.y) < 6 || ++sd.leg > 500) {
+        sd.pause = 40 + Math.floor(Math.random() * 40);
+        return { targetSpeed: 0 };
+      }
+      const wp = g.waypoint(c.x, c.y);
+      g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+      return { targetSpeed: g.speed * 1.2 };
+    },
+  },
+
+  // Following your search: while find-in-note has a match on screen, it goes to the one
+  // you're on, sniffs it over, and waits by it; when you step to the next it's off after
+  // it. (With every match marked, it works its way down the others meanwhile.) Search
+  // closed, or left alone a good while, it wanders off.
+  [STATE.SEARCH]: {
+    enter(g) {
+      g.stateData = { at: null, done: null, chosen: '', pause: 0, leg: 0, seen: 0, wait: 0, t: 0 };
+      g.flick();
+      g.c.log?.('search', 'Sniffed out your search');
+    },
+    update(g) {
+      const sd = g.stateData, head = g.head, ms = g.c.world.matches;
+      sd.t++;
+      if (!ms.length || sd.t > 7200 || sd.seen > 24) { g.searchCooldown = 600; return { targetSpeed: 0, transition: STATE.IDLE }; }
+      const same = (a: Rect | null, b: Rect) => !!a && Math.abs(a.x - b.x) < 2 && Math.abs(a.y - b.y) < 2;
+      const current = ms.find((m) => m.current);
+      // You stepped to another match: drop what it was doing and go.
+      if (current && sd.at && sd.chosen === 'current' && !same(sd.at, current)) { sd.at = null; sd.pause = 0; }
+      if (!sd.at) {
+        // The one you're on; or, done with that, the next one below where it has been.
+        const d: Rect | null = sd.done;
+        const after = (m: Rect) => !d || m.y > d.y + 1 || (Math.abs(m.y - d.y) <= 1 && m.x > d.x + 1);
+        const others = ms.filter((m) => !same(d, m));
+        const next = current && !same(d, current) ? current : others.find(after) ?? others[0];
+        if (!next) {
+          // Nothing new to sniff: wait by it, looking, for you to go on.
+          if (d) g.headLook.lookAt(angleDiff(g.angle, Math.atan2(d.y + d.h / 2 - head.y, d.x + d.w / 2 - head.x)));
+          if (++sd.wait % 70 === 0) g.flick();
+          if (sd.wait > 900) { g.searchCooldown = 900; return { targetSpeed: 0, transition: STATE.IDLE }; }
+          return { targetSpeed: 0 };
+        }
+        sd.at = next; sd.chosen = next === current ? 'current' : 'next'; sd.leg = 0; sd.wait = 0;
+      }
+      const m: Rect = sd.at;
+      // Nose to the word: just below it, at its middle.
+      const tx = m.x + m.w / 2, ty = m.y + m.h + 3;
+      if (sd.pause > 0) {
+        if (sd.pause % 22 === 0) g.flick();
+        g.headLook.lookAt(angleDiff(g.angle, Math.atan2(m.y + m.h / 2 - head.y, tx - head.x)));
+        if (--sd.pause <= 0) { sd.done = m; sd.at = null; sd.seen++; }
+        return { targetSpeed: 0 };
+      }
+      if (dist(head.x, head.y, tx, ty) < 5 || ++sd.leg > 1500) { sd.pause = 50 + Math.floor(Math.random() * 40); return { targetSpeed: 0 }; }
+      const wp = g.waypoint(tx, ty), far = dist(head.x, head.y, tx, ty);
+      g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+      // Eager: it hurries over, slowing for the last bit.
+      return { targetSpeed: g.speed * (far > 30 ? 1.8 : 1) };
+    },
+  },
+
+  // The view changed under it while it was by a side panel: up onto the panel, quick,
+  // where it is safe, and wait there watching until things settle.
+  [STATE.RETREAT]: {
+    enter(g) {
+      g.stateData = { spot: g.retreatTo!, out: g.retreatOut!, phase: 'run', wait: 150 + Math.random() * 200 };
+      g.planRoute(g.retreatTo!.x, g.retreatTo!.y);
+      g.flick();
+      g.c.log?.('retreat', 'Hid on the side panel');
+    },
+    update(g) {
+      const sd = g.stateData, head = g.head;
+      if (sd.phase === 'run') {
+        if (g.arrived(sd) || g.stateTimer > 400) {
+          sd.phase = 'wait'; sd.from = g.stateTimer;
+          // Face back out at the note it came from.
+          g.targetAngle = Math.atan2(sd.out.y - head.y, sd.out.x - head.x);
+          return { targetSpeed: 0 };
+        }
+        const wp = g.waypoint(sd.spot.x, sd.spot.y);
+        g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+        return { targetSpeed: g.c.opts.reducedMotion ? g.speed : g.speed * 2.2 };
+      }
+      const t = g.stateTimer - sd.from;
+      if (t % 70 === 30) g.headLook.look();
+      if (t % 90 === 60) g.flick();
+      if (t > sd.wait) return { targetSpeed: 0, transition: STATE.IDLE };
+      return { targetSpeed: Math.abs(angleDiff(g.angle, g.targetAngle)) > 0.4 ? 0.3 * S : 0 };
+    },
+  },
+
+  // The graph view: its nodes are balls, and it plays like a dog with one. It trots up,
+  // drops into a play bow — hips wiggling, tail going — and pounces: the ball goes flying
+  // and it's straight off after it. Sometimes it noses the ball along in front of it for a
+  // few steps before flicking it away. A ball that ends up behind it gets a wide loop
+  // round, not a spin on the spot. Played out, a few proud push-ups, and off it goes.
+  [STATE.PLAY]: {
+    enter(g) {
+      const balls = g.c.graph?.balls() ?? [];
+      let best: Ball | null = null;
+      for (const b of balls) if (!best || g.distTo(b.x, b.y) < g.distTo(best.x, best.y)) best = b;
+      g.stateData = { id: best?.id, phase: 'approach', t: 0, rounds: 4 + Math.floor(Math.random() * 4) };
+    },
+    update(g) {
+      const sd = g.stateData, pg = g.c.graph, head = g.head, b = g.body;
+      if (sd.phase === 'proud') {
+        // Played out: a few push-ups, pleased with itself.
+        if (++sd.t === 1) g.c.log?.('play', 'Played with the graph');
+        b.pushup = 2.4 * Math.max(0, Math.sin((sd.t / 30) * Math.PI)) * (sd.t < 90 ? 1 : 0);
+        if (sd.t > 110) { b.pushup = 0; g.playCooldown = 2400 + Math.random() * 2400; return { targetSpeed: 0, transition: STATE.IDLE }; }
+        return { targetSpeed: 0 };
+      }
+      const ball = pg?.balls().find((x) => x.id === sd.id);
+      if (!pg || !ball) return { targetSpeed: 0, transition: STATE.IDLE };
+      const s = g.snout(), gap = dist(s.x, s.y, ball.x, ball.y) - ball.r;
+      const toBall = Math.atan2(ball.y - head.y, ball.x - head.x), off = Math.abs(angleDiff(g.angle, toBall));
+      sd.t++;
+      // Run at the ball — or, if it's off behind it, loop wide round to come at it again.
+      const runAt = (speed: number) => {
+        if (off > 1.6 && gap < 40) {
+          const side = Math.sign(angleDiff(g.angle, toBall)) || 1;
+          g.targetAngle = g.angle + side * 0.5;
+        } else g.targetAngle = toBall;
+        return { targetSpeed: speed };
+      };
+      const kick = (k: number, a: number, next: string) => {
+        sd.from = { x: ball.x, y: ball.y };
+        sd.to = g.c.world.clampToBounds(ball.x + Math.cos(a) * k, ball.y + Math.sin(a) * k, 10);
+        sd.phase = 'kick'; sd.t = 0; sd.next = next;
+        g.flick();
+      };
+      switch (sd.phase) {
+        case 'approach':
+          if (sd.rounds <= 0) { sd.phase = 'proud'; sd.t = 0; return { targetSpeed: 0 }; }
+          if (gap < 18 && off < 0.5) { sd.phase = 'bow'; sd.t = 0; sd.bowFor = 18 + Math.random() * 22; return { targetSpeed: 0 }; }
+          if (sd.t > 600) sd.rounds = 0;
+          return runAt(g.speed * (gap > 40 ? 1.5 : 0.9));
+        case 'bow':
+          // The play bow: frozen on it, hips wiggling, tail going.
+          g.targetAngle = toBall;
+          b.wiggle = 1;
+          if (sd.t > sd.bowFor) {
+            b.wiggle = 0;
+            sd.phase = 'pounce'; sd.t = 0;
+            g.currentSpeed = g.c.opts.reducedMotion ? g.speed : g.speed * 3;
+          }
+          return { targetSpeed: 0 };
+        case 'pounce':
+          if (gap < 2) {
+            sd.rounds--;
+            // Sometimes it noses the ball along; mostly it knocks it flying.
+            if (Math.random() < 0.25) { sd.phase = 'dribble'; sd.t = 0; sd.dribbleFor = 60 + Math.random() * 60; sd.wander = (Math.random() - 0.5) * 0.02; return { targetSpeed: g.speed }; }
+            kick(30 + Math.random() * 25, b.headAngle + (Math.random() - 0.5) * 0.7, 'chase');
+            return { targetSpeed: g.speed * 0.8 };
+          }
+          if (sd.t > 60) { sd.phase = 'approach'; sd.t = 0; }
+          return runAt(g.c.opts.reducedMotion ? g.speed : g.speed * 3);
+        case 'kick': {
+          // The ball flies off, easing out; it's already running after it.
+          const u = 1 - (1 - Math.min(1, sd.t / 14)) ** 2;
+          pg.push(sd.id, lerp(sd.from.x, sd.to.x, u), lerp(sd.from.y, sd.to.y, u));
+          if (sd.t >= 14) { pg.letGo(sd.id); sd.phase = sd.next; sd.t = 0; }
+          g.headLook.lookAt(angleDiff(g.angle, toBall));
+          return { targetSpeed: g.speed * (0.8 + Math.min(1, sd.t / 14)) };
+        }
+        case 'chase':
+          // Straight after it; caught up, it bows again for another go, or noses it along.
+          if (gap < 12) {
+            if (sd.rounds <= 0) { sd.phase = 'proud'; sd.t = 0; return { targetSpeed: 0 }; }
+            if (off < 0.5 && Math.random() < 0.25) { sd.rounds--; sd.phase = 'dribble'; sd.t = 0; sd.dribbleFor = 50 + Math.random() * 50; sd.wander = (Math.random() - 0.5) * 0.02; return { targetSpeed: g.speed }; }
+            sd.phase = 'approach'; sd.t = 0;
+          }
+          if (sd.t > 400) { sd.phase = 'approach'; sd.t = 0; }
+          return runAt(g.speed * 1.8);
+        case 'dribble': {
+          // Nosing it along, a little weave to the trot, the ball just ahead of its snout.
+          g.targetAngle = g.angle + sd.wander + Math.sin(sd.t * 0.08) * 0.02;
+          const f = b.headAngle;
+          pg.push(sd.id, s.x + Math.cos(f) * (ball.r + 1), s.y + Math.sin(f) * (ball.r + 1));
+          if (sd.t > sd.dribbleFor || !g.c.world.inBounds(head.x + Math.cos(g.angle) * 20, head.y + Math.sin(g.angle) * 20, 10)) {
+            // ...and a flick of the head sends it off.
+            pg.letGo(sd.id);
+            kick(20 + Math.random() * 15, f + (Math.random() - 0.5) * 1.2, 'chase');
+          }
+          return { targetSpeed: g.speed * 0.9 };
+        }
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // A nap on a code block or callout. It walks in along the top of the block's front
+  // edge from just past its end; then, as it settles, the view turns over to nearly
+  // side-on — the same body, in 3-D — and it lies down along the top, an arm and a leg
+  // slipping over the edge, the tail drooping over the end, eyes closing; Z's. A pointer
+  // moving close by wakes it, and it steps out of the pose and walks off.
+  // Pressing a button on screen: the pet panel's "Have something to eat" when it's hungry,
+  // or, being mischievous, a sidebar toggle. It walks up beside it, rears up and raises a
+  // hand high over it (the button lights up as if hovered), holds it there a dramatic
+  // moment, trembling, and brings it down: the button goes down, and comes up as it lets
+  // go. After a prank it scampers off, pleased with itself; after asking for food, it
+  // waits for what turns up.
+  [STATE.PRANK]: {
+    enter(g) {
+      const t = g.prankTarget!, b = g.body, head = g.head, W = g.c.world.bounds;
+      // Facing the button from the middle of the window, so its tail lies back inward.
+      let hx = t.x - (W.x + W.w / 2), hy = t.y - (W.y + W.h / 2);
+      const hl = Math.hypot(hx, hy) || 1; hx /= hl; hy /= hl;
+      const neck = dist(head.x, head.y, b.pts[TORSO_FIRST].x, b.pts[TORSO_FIRST].y), mid = dist(head.x, head.y, b.pts[12].x, b.pts[12].y);
+      // The button a little ahead and off to one side of its shoulder, within an arm's
+      // reach: where its head ends up, standing so, with the button `on` the terrain there.
+      const stand = (on: Pt, side: number) => {
+        const lx = hy * side, ly = -hx * side;
+        const sx = on.x - hx * PRANK_AHEAD - lx * PRANK_OUT, sy = on.y - hy * PRANK_AHEAD - ly * PRANK_OUT;
+        const end = { x: sx + hx * neck, y: sy + hy * neck };
+        const room = Math.min(end.x - W.x, W.x + W.w - end.x, end.y - W.y, W.y + W.h - end.y, sx - W.x, W.x + W.w - sx, sy - W.y, W.y + W.h - sy);
+        // Up the screen from its shoulder if it can, so the raised hand stands clear of its
+        // body rather than in front of it; otherwise further from the window's edges.
+        return { end, score: room + (ly < 0 && room > 6 ? 1000 : 0) };
+      };
+      // The button is drawn at (t.x, t.y). On raised terrain that's a little down the page
+      // from it, and nearer the body's middle (see Body.project): plan around the button,
+      // then again around where its middle will be.
+      const first = b.unproject(t.x, t.y, t);
+      const side = stand(first, 1).score >= stand(first, -1).score ? 1 : -1;
+      const rough = stand(first, side).end;
+      const best = stand(b.unproject(t.x, t.y, { x: rough.x - hx * mid, y: rough.y - hy * mid }), side);
+      const end = best.end, spot = { x: end.x - hx * 26, y: end.y - hy * 26 };
+      g.stateData = { phase: 'go', target: t, at: { x: t.x, y: t.y }, h: { x: hx, y: hy }, spot, end, t: 0 };
+      g.planRoute(spot.x, spot.y);
+    },
+    update(g) {
+      const sd = g.stateData, b = g.body, head = g.head, t: PrankTarget = sd.target;
+      sd.t++;
+      const ease = (a: number, d: number) => smoothstep(clamp((sd.t - a) / d, 0, 1));
+      const facing = Math.atan2(sd.h.y, sd.h.x);
+      if ((sd.phase === 'go' || sd.phase === 'line') && !t.ok()) return { targetSpeed: 0, transition: STATE.IDLE };
+      switch (sd.phase) {
+        case 'go': {
+          if (g.arrived(sd)) { sd.phase = 'line'; sd.t = 0; }
+          else if (sd.t > 2400) return { targetSpeed: 0, transition: STATE.IDLE };
+          const wp = g.waypoint(sd.spot.x, sd.spot.y);
+          g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+          return { targetSpeed: g.speed * 0.8 };
+        }
+        case 'line': {
+          // Creeping up the last bit, lined up on it, slowing to a stop right on the spot.
+          const left = -((head.x - sd.end.x) * sd.h.x + (head.y - sd.end.y) * sd.h.y);
+          if (left < 0.3 || sd.t > 400) { sd.phase = 'raise'; sd.t = 0; g.currentSpeed = 0; return { targetSpeed: 0 }; }
+          g.targetAngle = Math.atan2(sd.end.y - head.y, sd.end.x - head.x);
+          return { targetSpeed: g.speed * 0.4 * clamp(left / 8, 0.12, 1) };
+        }
+        case 'raise': {
+          g.targetAngle = facing;
+          g.headLook.lookAt(angleDiff(g.angle, Math.atan2(sd.at.y - head.y, sd.at.x - head.x)));
+          // Up on its front legs, the hand raised high over the button...
+          b.pushup = 1.4 * ease(0, 20) * (1 - ease(104, 16));
+          let z = PRANK_RAISE * ease(0, 24);
+          // ...held there, trembling...
+          if (sd.t >= 24 && sd.t < 70) z = PRANK_RAISE + Math.sin((sd.t - 24) * 0.45) * 0.6;
+          // ...and down it comes.
+          if (sd.t >= 70) z = PRANK_RAISE * (1 - ease(70, 6));
+          b.reach = { x: sd.at.x, y: sd.at.y, z, k: ease(0, 20) * (1 - ease(100, 18)) };
+          if (sd.t === 12 && t.ok()) { t.hover(true); g.pressing = t; }
+          if (sd.t === 76) {
+            t.down(true);
+            if (t.kind === 'food') g.snackCooldown = SNACK_EVERY[0] + Math.random() * (SNACK_EVERY[1] - SNACK_EVERY[0]);
+            else g.mischiefCooldown = g.mischiefGap();
+            g.c.particles.burst(sd.at.x, sd.at.y, g.c.pal.ink, 5, 16);
+          }
+          if (sd.t === 86) {
+            t.down(false);
+            const did = t.ok() ? t.press() : undefined;
+            if (did) g.c.log?.(t.kind === 'food' ? 'snack' : 'prank', did);
+          }
+          if (sd.t === 108) { t.hover(false); g.pressing = null; }
+          if (sd.t >= 120) {
+            b.reach = null; b.pushup = 0;
+            if (t.kind === 'food') return { targetSpeed: 0, transition: STATE.IDLE };
+            g.scamperFrom(sd.at);
+            return { targetSpeed: g.speed };
+          }
+          return { targetSpeed: 0 };
+        }
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  [STATE.NAP]: {
+    enter(g) {
+      const r = g.napRock!, h = g.head;
+      // Lying in from the nearer end, facing along the block, hips at that end so the tail
+      // goes over it.
+      // Right at the edge, so turning the view to side-on and back doesn't slide it up or down.
+      const face = h.x < r.x + r.w / 2 ? 1 : -1, x = face > 0 ? r.x + 20 : r.x + r.w - 20, y = r.y - 1;
+      // It comes in from just past the block's end, along the edge, so it's lying straight
+      // along it with its tail trailing out over the end.
+      const corner = face > 0 ? r.x : r.x + r.w, far = face > 0 ? r.x + r.w - 14 : r.x + 14;
+      g.stateData = { phase: 'go', face, spot: { x: corner - face * 12, y }, end: { x, y }, far, corner, ledge: r.y, tilt: 0, stand: 1, droop: 0, front: 0, hind: 0, lids: 0, sleepFor: 600 + Math.random() * 900, t: 0 };
+      g.planRoute(corner - face * 12, y);
+    },
+    update(g) {
+      const sd = g.stateData, head = g.head, b = g.body;
+      sd.t++;
+      const ease = (a: number, d: number) => smoothstep(clamp((sd.t - a) / d, 0, 1));
+      switch (sd.phase) {
+        case 'go': {
+          if (g.arrived(sd) || sd.t > 600) { sd.phase = 'line'; sd.t = 0; }
+          const wp = g.waypoint(sd.spot.x, sd.spot.y);
+          g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+          return { targetSpeed: g.speed * 0.8 };
+        }
+        case 'line': {
+          // Along the edge, so it's lying the right way when it settles — and not until
+          // it's lined up with it: if it isn't yet, a few more steps along.
+          const along = sd.face > 0 ? 0 : Math.PI;
+          // (Facing along it will do: as it settles the body straightens out behind the head.)
+          const lined = Math.abs(angleDiff(b.heading, along)) < 0.15 && (b.pts[HIP_SEG].x - b.pts[2].x) * sd.face < 0;
+          if ((head.x - sd.end.x) * sd.face > -1 && !lined && (sd.end.x - sd.far) * sd.face < 0) sd.end.x += sd.face * 4;
+          if (((head.x - sd.end.x) * sd.face > -1 && lined) || sd.t > 360) {
+            sd.phase = 'settle'; sd.t = 0;
+            b.curlStyle = 'drape';
+            // The animal's left is up the screen when it faces right: turn the tail the
+            // other way, out over the edge.
+            b.curlDir = Math.cos(b.heading) > 0 ? -1 : 1;
+            return { targetSpeed: 0 };
+          }
+          g.targetAngle = Math.atan2(sd.end.y - head.y, sd.end.x - head.x);
+          return { targetSpeed: g.speed * 0.5 };
+        }
+        case 'settle':
+          // The view turns side-on while it stands; it lies down; the arm, then the leg,
+          // slips over the edge; the tail slides over the end and droops; its eyes drift
+          // half shut, a while later all the way.
+          sd.tilt = ease(0, 30);
+          sd.stand = 1 - ease(36, 24);
+          sd.front = ease(62, 14);
+          sd.hind = ease(78, 14);
+          sd.droop = ease(92, 30);
+          sd.lids = ease(122, 10) * 0.5 + ease(146, 20) * 0.5;
+          if (sd.t === 40) g.flick();
+          if (sd.t >= 170) { sd.phase = 'asleep'; sd.t = 0; g.c.log?.('nap', `Napped on a ${g.napRock?.kind ?? 'code block'}`); }
+          break;
+        case 'wake': {
+          // Waking, it steps out of it: the eye opens and it lies a moment, tasting the air;
+          // then, already stepping off, it draws the arm up into its first step, rises onto
+          // its legs mid-stride while the tail lifts off the edge behind it, and the view
+          // turns back over its next few steps.
+          sd.lids = 1 - ease(0, 5);
+          if (sd.t === 12) g.flick();
+          sd.front = 1 - ease(26, 8);
+          sd.hind = 1 - ease(32, 8);
+          sd.stand = ease(28, 16);
+          sd.droop = 1 - ease(34, 16);
+          sd.tilt = 1 - ease(46, 26);
+          b.dangle = { front: sd.front, hind: sd.hind };
+          if (sd.t >= 72) {
+            // Off along the block the way it's facing, rather than wheeling about.
+            const w = g.c.world.clampToBounds(head.x + sd.face * 60, head.y, 10);
+            g.summon(w);
+            return { targetSpeed: g.speed * 0.6 };
+          }
+          if (sd.t >= 24) {
+            g.targetAngle = sd.face > 0 ? 0 : Math.PI;
+            // Straight into its stride: no creeping start.
+            if (sd.t === 24) g.currentSpeed = Math.max(g.currentSpeed, g.speed * 0.3);
+            return { targetSpeed: g.speed * 0.6 };
+          }
+          return { targetSpeed: 0 };
+        }
+      }
+      b.dangle = { front: sd.front, hind: sd.hind };
+      // Settling or asleep. The block scrolled away or the note changed under it: up.
+      if (!g.c.world.rockAt(b.pts[12].x, sd.ledge + 2)) return { targetSpeed: 0, transition: STATE.IDLE };
+      if (g.userIdle) sd.sleepFor = Math.max(sd.sleepFor, sd.t + 60);
+      // A pointer moving about close by wakes it; one already resting there doesn't. Just
+      // dropping off, it takes a pointer brushing quickly past to rouse it.
+      const p = g.pointer, drowsy = sd.phase === 'settle' || sd.t < MIN_SLEEP;
+      if ((p && g.cursorSpeed > (drowsy ? 2 : 0.3) && g.bodyDistance(p.x, p.y) < 18) || (sd.phase === 'asleep' && sd.t > sd.sleepFor)) {
+        if (sd.phase === 'asleep') g.needs.sleepiness = Math.max(0, g.needs.sleepiness - 0.5);
+        sd.phase = 'wake'; sd.t = 0;
+      }
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // Picked up by the user. The body dangles and squirms; the mind just waits to be let go.
+  [STATE.HELD]: {
+    enter(g) { g.stateData = {}; g.currentSpeed = 0; },
+    update(g) {
+      if (g.stateTimer % 40 === 15) g.flick();
+      return { targetSpeed: 0 };
+    },
+  },
+
+  // Under a side panel: approach its edge, slip under, wait, turn round, peek out and
+  // look about, then come out — or think better of it and go back under.
+  [STATE.HIDE]: {
+    enter(g) {
+      g.stateData = { phase: g.hideFast ? 'slip' : 'approach', timer: 0, wait: 0, looks: 0 };
+      if (g.cover && !g.hideFast) g.planRoute(g.cover.x - g.cover.nx * 8, g.cover.y - g.cover.ny * 8);
+    },
+    update(g) {
+      const sd = g.stateData, e = g.cover, head = g.head;
+      if (!e) return { targetSpeed: 0.05 * S, transition: STATE.IDLE };
+      sd.timer++;
+      // How far the head is past the panel's edge (negative: still outside).
+      const depth = (head.x - e.x) * e.nx + (head.y - e.y) * e.ny;
+      const out = Math.atan2(-e.ny, -e.nx);
+      if (sd.phase !== 'approach' && !g.c.world.coverAt(e.x + e.nx * 3, e.y + e.ny * 3)) {
+        // The panel went away and left it out in the open.
+        g.cover = null;
+        g.scare(e.x + e.nx * 20, e.y);
+        return { targetSpeed: 0 };
+      }
+      switch (sd.phase) {
+        case 'approach': {
+          const ox = e.x - e.nx * 8, oy = e.y - e.ny * 8;
+          const wp = g.waypoint(ox, oy);
+          g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+          const burstPhase = g.burstTimer % 80;
+          const targetSpeed = burstPhase < 15 ? 0.15 * S : burstPhase < 55 ? g.speed : 0.3 * S;
+          if (dist(head.x, head.y, ox, oy) < 6) { sd.phase = 'slip'; g.flick(); }
+          if (sd.timer > 900) { g.cover = null; return { targetSpeed, transition: STATE.EXPLORE }; }
+          return { targetSpeed };
+        }
+        case 'slip': {
+          g.body.under = true;
+          g.targetAngle = Math.atan2(e.y + e.ny * e.depth - head.y, e.x + e.nx * e.depth - head.x);
+          const targetSpeed = g.hideFast ? g.speed * g.traits.resolve('fleeMultiplier') : g.speed * 0.8;
+          if (depth > e.depth - 4) {
+            sd.phase = 'under'; sd.timer = 0;
+            sd.wait = (120 + Math.random() * 240) * (g.hideFast ? 1.5 : 1) * (1 - g.needs.hungerFactor * 0.5);
+            g.hideFast = false;
+          }
+          return { targetSpeed };
+        }
+        case 'under':
+          if (sd.timer > sd.wait) { sd.phase = 'turn'; sd.timer = 0; }
+          return { targetSpeed: 0 };
+        case 'turn':
+          g.targetAngle = out;
+          if (Math.abs(angleDiff(g.angle, out)) < 0.25) { sd.phase = 'peek'; sd.timer = 0; }
+          return { targetSpeed: 0.3 * S };
+        case 'peek':
+          // Back to the edge at a walk, then creep the last bit until just the head is out.
+          g.targetAngle = out;
+          if (depth < -3) { sd.phase = 'look'; sd.timer = 0; sd.looks = 2 + Math.floor(Math.random() * 3); }
+          return { targetSpeed: depth > 8 ? g.speed * 0.7 : 0.3 * S };
+        default: {
+          // Just the head out: look about and taste the air.
+          if (sd.timer % 35 === 12) { g.headLook.look(); sd.looks--; }
+          if (sd.timer % 45 === 25) g.flick();
+          if (sd.timer % 50 === 40) g.blink();
+          if (sd.looks <= 0) {
+            if (Math.random() < 0.2 && !g.needs.canSleep()) { sd.phase = 'slip'; sd.timer = 0; return { targetSpeed: 0 }; }
+            g.cover = null;
+            g.hideCooldown = 2400 + Math.random() * 3000;
+            return { targetSpeed: 0, transition: STATE.EXPLORE };
+          }
+          return { targetSpeed: 0 };
+        }
+      }
+    },
+  },
+};
+
+/**
+ * After the snatch: a tug to pull it free, off to a quiet spot with it, and eat it there,
+ * chewing, crumbs falling, until it's gone.
+ */
+function stealing(g: Personality): Result {
+  const sd = g.stateData, head = g.head, b = g.body;
+  if (sd.phase === 'grab') {
+    b.mouthTarget = 1;
+    if (sd.stuck) {
+      // Jaws clamped, it braces and wrenches its head side to side in bursts.
+      const t = sd.timer, burst = Math.floor(t / 28) % 2 === 0;
+      g.headLook.lookAt(angleDiff(g.angle, sd.toLetter) + Math.sin(t * 0.85) * (burst ? 0.5 : 0.12));
+      g.c.reactions.tug(burst ? 0.55 + 0.45 * Math.abs(Math.sin(t * 0.42)) : 0.3);
+    }
+    if (sd.timer > sd.len) {
+      if (sd.stuck) {
+        // Pop: it comes free, scattering a few crumbs from where it was.
+        g.c.particles.burst(sd.slot.x, sd.slot.y, g.c.pal.ink, 3, 10);
+        g.flick();
+      }
+      g.c.reactions.free();
+      b.mouthTarget = 0.35;
+      sd.spot = g.eatingSpot();
+      g.planRoute(sd.spot.x, sd.spot.y);
+      sd.phase = 'carry'; sd.timer = 0;
+    }
+    // A moment, jaws clamped, to pull it free.
+    return { targetSpeed: 0 };
+  }
+  if (sd.phase === 'carry') {
+    const wp = g.waypoint(sd.spot.x, sd.spot.y);
+    g.targetAngle = Math.atan2(wp.y - head.y, wp.x - head.x);
+    const burstPhase = g.burstTimer % 70;
+    const targetSpeed = burstPhase < 10 ? 0.2 * S : burstPhase < 50 ? g.speed : 0.35 * S;
+    if (dist(head.x, head.y, sd.spot.x, sd.spot.y) < 6 || sd.timer > 600) { sd.phase = 'eat'; sd.timer = 0; }
+    return { targetSpeed };
+  }
+  // Eat: jaws working, head bobbing, the letter shrinking bite by bite.
+  const t = sd.timer, EAT = 120;
+  b.mouthTarget = Math.floor(t / 7) % 2 === 0 ? 0.6 : 0.1;
+  g.headLook.lookAt(Math.sin(t * 0.5) * 0.2);
+  g.c.reactions.chew(1 - t / EAT);
+  if (t % 22 === 11) {
+    const s = g.snout();
+    g.c.particles.burst(s.x, s.y, g.c.pal.ink, 2, 8);
+  }
+  if (t > EAT) {
+    g.c.reactions.finish(true);
+    g.carrying = false;
+    b.mouthTarget = 0;
+    g.needs.feed(4);
+    g.flick();
+    return { targetSpeed: 0, transition: STATE.IDLE };
+  }
+  return { targetSpeed: 0 };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PERSONALITY — orchestrator
+// ═══════════════════════════════════════════════════════════════════
+
+const NIBBLE_FIRST: [number, number] = [60, 120];
+const NIBBLE_EVERY: [number, number] = [150, 330];
+
+export class Personality {
+  traits: TraitEngine;
+  readonly needs: Needs;
+  angle: number;
+  targetAngle: number;
+  speed: number;
+  currentSpeed = 0;
+  burstTimer = 0;
+
+  headLook = new HeadLookBehavior();
+
+  state: State = STATE.IDLE;
+  stateTimer = 0;
+  // Per-state scratch; each handler owns its own shape, as in the original.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  stateData: any = {};
+  destX = 0;
+  destY = 0;
+  homeX = 0;
+  homeY = 0;
+  targetBug: Bug | null = null;
+  sleepPeeking = false;
+  cursorSpeed = 0;
+  private lastCursor: { x: number; y: number } | null = null;
+
+  threatX = 0;
+  threatY = 0;
+  mildScare = false;
+  petted = false;
+  forcedNap = false;
+  entering: boolean;
+  typing = false;
+  userIdle = false;
+  private petTimer = 0;
+  /** The panel it is heading under or hiding beneath. */
+  cover: CoverEntry | null = null;
+  hideFast = false;
+  /** A push-up display under way or to come: when it starts (state ticks), how many bobs. */
+  display: { at: number; bobs: number } | null = null;
+  /** The places in a newly opened note to go and look at (art px), in order. */
+  scoutStops: { x: number; y: number }[] = [];
+  /** Where on a side panel to run to, and where it ran from. */
+  retreatTo: { x: number; y: number } | null = null;
+  retreatOut: { x: number; y: number } | null = null;
+  /** Ticks until it will start another game with the graph. */
+  playCooldown = 0;
+  /** A "!" over its head for this many ticks more: it just got a fright. */
+  alarm = 0;
+  /** Not up to anything for this many ticks yet (a little under the usual gap, to begin with). */
+  mischiefCooldown: number;
+
+  /** Ticks until the next prank, at random within the range the settings ask for. */
+  mischiefGap() {
+    const [lo, hi] = this.c.opts.mischiefMinutes ?? MISCHIEF_MINUTES;
+    return (lo + Math.random() * (hi - lo)) * 3600;
+  }
+  /** The button it's off to press. */
+  prankTarget: PrankTarget | null = null;
+  /** The button its hand is over, showing hovered (or pressed), until it's done with it. */
+  pressing: PrankTarget | null = null;
+  /** Ticks before it asks for food again. */
+  snackCooldown = SNACK_EVERY[0] * 0.5;
+
+  /** Hungry, nothing to hunt, and a button for food on screen (into prankTarget)? */
+  wantsSnack() {
+    if (this.snackCooldown > 0 || this.needs.hungerFactor < 0.45 || this.c.swarm.bugs.length || this.typing) return false;
+    const food = this.c.pranks?.targets().find((t) => t.kind === 'food');
+    if (!food || Math.random() > 0.6) return false;
+    this.prankTarget = food;
+    return true;
+  }
+
+  /** Feeling mischievous, with a prank to play (into prankTarget)? Never while you're typing. */
+  wantsMischief() {
+    const p = this.c.pranks;
+    if (!this.c.opts.mischief || !p || this.c.input.typedWithin(this.c.now, 15000)) return false;
+    const ts = p.targets().filter((t) => t.kind === 'mischief'), due = ts.find((t) => t.due);
+    if (due) { this.prankTarget = due; return true; }
+    if (this.mischiefCooldown > 0 || !ts.length || Math.random() > 0.5) return false;
+    this.prankTarget = ts[Math.floor(Math.random() * ts.length)];
+    return true;
+  }
+
+  /** Off it goes after a prank, at a scamper rather than in a fright. */
+  scamperFrom(p: { x: number; y: number }) {
+    this.threatX = p.x;
+    this.threatY = p.y;
+    this.mildScare = true;
+    this.enterState(STATE.FLEE);
+  }
+
+  /** A new nature: rolled traits, or a different temperament, from the settings. */
+  setNature(traits: Traits, temperament: Temperament = 'own') {
+    this.traits = new TraitEngine(traits, TRAIT_BUDGET, temperament);
+    this.needs.engine = this.traits;
+  }
+  /** Napping on a block: the view turned over about its edge, and how far (see GeckoRenderer.tilt). */
+  get napTilt(): { pivot: number; amount: number; end: number; face: 1 | -1; stand: number; droop: number } | null {
+    const sd = this.stateData;
+    return this.state === STATE.NAP && sd.tilt > 0 ? { pivot: sd.ledge, amount: sd.tilt, end: sd.corner, face: sd.face, stand: sd.stand, droop: sd.droop } : null;
+  }
+
+  /** Fast asleep, curled up with its eyes shut: the Z's come out. */
+  get dozing() {
+    return (this.body.curl > 0.6 && this.body.lid > 0.9 && this.state === STATE.SLEEP && !this.sleepPeeking) || (this.state === STATE.NAP && this.stateData.phase === 'asleep' && this.stateData.t > 45);
+  }
+
+  /** The block it means to nap on. */
+  napRock: Rock | null = null;
+  /** Ticks until it will nap on a block again. */
+  napCooldown = 0;
+
+  /** Sleepy, or just in the mood, with a code block or callout close by: nap on it? */
+  wantsNap() {
+    if (this.napCooldown > 0 || (this.needs.sleepiness < 0.25 && Math.random() > 0.12)) return false;
+    return this.findNapRock(260);
+  }
+
+  /** The nearest code block or callout on screen it could nap on, within `range` (into napRock). */
+  findNapRock(range: number) {
+    const w = this.c.world, h = this.head;
+    let best: Rock | null = null;
+    for (const r of w.rocks) {
+      // Big enough to curl up on, and on screen.
+      if (r.w < 36 || r.h < 10 || !w.inBounds(r.x + r.w / 2, r.y + r.h / 2, 8)) continue;
+      const d = Math.hypot(clamp(h.x, r.x, r.x + r.w) - h.x, clamp(h.y, r.y, r.y + r.h) - h.y);
+      if (d < range && (!best || d < Math.hypot(clamp(h.x, best.x, best.x + best.w) - h.x, clamp(h.y, best.y, best.y + best.h) - h.y))) best = r;
+    }
+    this.napRock = best;
+    return !!best;
+  }
+
+  /** Plan a push-up display `inTicks` from now in this state: two to four bobs. */
+  schedulePushups(inTicks: number) {
+    this.display = { at: this.stateTimer + inTicks, bobs: 2 + Math.floor(Math.random() * 3) };
+  }
+
+  /** A spot on a picture on screen within `range` (art px) to bask on, if there is one. */
+  warmSpot(range: number) {
+    const h = this.head;
+    let best: { x: number; y: number } | null = null, bd = range;
+    for (const r of this.c.world.warm) {
+      const x = r.x + r.w * (0.3 + Math.random() * 0.4), y = r.y + r.h * (0.35 + Math.random() * 0.3), d = dist(h.x, h.y, x, y);
+      if (d < bd) { bd = d; best = { x, y }; }
+    }
+    return best;
+  }
+
+  /** Not off after your search again for a while. */
+  searchCooldown = 0;
+
+  /** A big chunk of text deleted at (x, y): it jumps at the crash and looks over; right beside it, it bolts. */
+  crash(x: number, y: number) {
+    const st = this.state;
+    if (st === STATE.HELD || st === STATE.STARTLE || st === STATE.FLEE) return;
+    if (this.bodyDistance(x, y) < 25) { this.scareFrom({ x, y }); return; }
+    if (dist(this.head.x, this.head.y, x, y) > 260) return;
+    this.threatX = x; this.threatY = y;
+    this.mildScare = this.c.opts.reducedMotion;
+    this.forcedNap = false;
+    this.petted = false;
+    this.enterState(STATE.STARTLE);
+    this.stateData.stay = true;
+  }
+
+  /** You ticked off the last open task in a note: a few proud push-ups. */
+  cheer() {
+    const st = this.state;
+    if (st !== STATE.IDLE && st !== STATE.BASKING && st !== STATE.EXPLORE && st !== STATE.LURK && st !== STATE.CURIOUS && st !== STATE.WATCH && st !== STATE.INSPECT) return;
+    this.enterState(STATE.IDLE);
+    this.stateData.duration = 400;
+    this.display = { at: this.stateTimer + 8, bobs: 4 };
+    this.c.log?.('cheer', 'Cheered you finishing your tasks');
+  }
+
+  /** In a graph view with a node close by, and not played lately: fancy a game? */
+  wantsToPlay() {
+    if (this.playCooldown > 0 || !this.c.graph || Math.random() > 0.7) return false;
+    return this.c.graph.balls().some((b) => this.distTo(b.x, b.y) < 220);
+  }
+
+  /**
+   * Run the push-up display, if one is due: the front legs straighten to lift the chest and
+   * head, hold a beat, and drop, a few times in quick succession, head facing ahead.
+   * True while it is displaying (and the state should hold still and not time out).
+   */
+  pushups(): boolean {
+    const d = this.display, b = this.body;
+    if (!d || this.stateTimer < d.at) { b.pushup = 0; return false; }
+    const BOB = 32, t = this.stateTimer - d.at;
+    if (t === 0) this.c.log?.('pushups', 'Did push-ups');
+    if (t >= BOB * d.bobs) {
+      this.display = null;
+      b.pushup = 0;
+      this.stateData.duration = Math.max(this.stateData.duration ?? 0, this.stateTimer + 20);
+      return false;
+    }
+    const u = (t % BOB) / BOB, first = t < BOB ? 1.15 : 1;
+    const lift = u < 0.35 ? smoothstep(u / 0.35) : u < 0.55 ? 1 : 1 - smoothstep((u - 0.55) / 0.45);
+    b.pushup = 3.4 * first * lift;
+    this.headLook.lookAt(0);
+    return true;
+  }
+
+  /** Has a stolen letter in its mouth. */
+  carrying = false;
+  /** What it last caught. */
+  preyKind: 'fly' | 'cricket' = 'fly';
+  /** Something to chase that isn't a bug: a notice, a dragged item (art px). */
+  lure: { x: number; y: number } | null = null;
+  private lureTicks = 0;
+  /** For a notice: is it still on screen? */
+  private lureThere: (() => boolean) | null = null;
+  /** What it is watching (a modal's centre). */
+  watching: { x: number; y: number } | null = null;
+  /** The end of what you just wrote, to come and sniff. */
+  inkAt: { x: number; y: number } | null = null;
+  /** Ticks before it will come and lurk by your typing again. */
+  lurkCooldown = 0;
+  /** What it is (about to be) stalking from a distance. */
+  lurkTarget: 'caret' | 'pointer' = 'caret';
+  /** Ticks before the pointer can catch its eye again. */
+  curiousCooldown = 0;
+  /** How often a letter is stuck fast and takes a struggle to pull free. */
+  stuckChance = 0.45;
+  private route: Waypoint[] | null = null;
+  private routeAt = 0;
+  private routeTo: { x: number; y: number } | null = null;
+  /** Ticks until it will hide again of its own accord. */
+  hideCooldown = 0;
+  private mouthTicks = 0;
+
+  letter: NibbleTarget | null = null;
+  letterAt: { x: number; y: number } | null = null;
+  private letterSince = 0;
+  private nextNibble: number;
+  private trackIn = 0;
+
+  constructor(readonly c: Ctx, entering: boolean) {
+    this.traits = new TraitEngine(c.opts.traits ?? rollTraits(), TRAIT_BUDGET, c.opts.temperament);
+    this.needs = new Needs(this.traits);
+    this.angle = this.targetAngle = c.body.heading;
+    this.speed = this.traits.resolve('baseSpeed') * S;
+    this.entering = entering;
+    this.nextNibble = c.now + rand(...NIBBLE_FIRST) * 1000;
+    this.mischiefCooldown = this.mischiefGap() * 0.4;
+    this.chooseHome();
+    if (entering) {
+      this.enterState(STATE.EXPLORE);
+      const b = c.world.bounds;
+      this.destX = b.x + rand(40, 70);
+      this.destY = c.body.head.y;
+      // It comes in from under the side panels and stops once it's out in the open.
+      for (let r = c.world.coverAt(this.destX, this.destY); r; r = c.world.coverAt(this.destX, this.destY)) this.destX = r.x + r.w + rand(12, 30);
+    } else this.enterState(STATE.IDLE);
+  }
+
+  get body() { return this.c.body; }
+  /** The pointer, unless the gecko is under a panel and the pointer is on top of it. */
+  get pointer() { const p = this.c.pointer; return p && !(this.body.under && this.c.world.coverAt(p.x, p.y)) ? p : null; }
+
+  /** Wary geckos like to get under things. */
+  wantsCover() {
+    if (!HIDING || this.hideCooldown > 0) return false;
+    if (Math.random() > 0.02 + 0.06 * (this.traits.traits.awareness ?? 0.5)) return false;
+    this.hideFast = false;
+    return this.findCover(150);
+  }
+
+  findCover(range: number, threat?: { x: number; y: number }) {
+    this.cover = this.c.world.coverEntry(this.head.x, this.head.y, range, threat);
+    return !!this.cover;
+  }
+  get head() { return this.c.body.head; }
+  distTo(x: number, y: number) { return dist(this.head.x, this.head.y, x, y); }
+
+  flick() { this.body.flickTongue('flick'); }
+  blink() { this.body.blink(); }
+
+  enterState(state: State) {
+    // Interrupted with a stolen letter in its mouth: it drops it.
+    if (this.carrying && state !== STATE.NIBBLE) { this.c.reactions.finish(false); this.carrying = false; }
+    this.display = null;
+    if (this.state === STATE.PLAY && this.stateData.id) this.c.graph?.letGo(this.stateData.id);
+    if (this.state === STATE.NAP) { this.napCooldown = 3600 + Math.random() * 3600; this.body.dangle = { front: 0, hind: 0 }; }
+    // Coming to rest under a panel (after a dash, say) is hiding: it will peek out.
+    if ((state === STATE.IDLE || state === STATE.BASKING) && this.body.under && this.c.world.coverAt(this.head.x, this.head.y) && this.findCover(200)) {
+      state = STATE.HIDE;
+      this.hideFast = false;
+    }
+    this.state = state;
+    this.stateTimer = 0;
+    this.stateData = {};
+    StateHandlers[state].enter(this);
+    if (state === STATE.HIDE && this.body.under && this.c.world.coverAt(this.head.x, this.head.y) && this.stateData.phase === 'approach') {
+      this.stateData.phase = 'under';
+      this.stateData.wait = 60 + Math.random() * 120;
+    }
+  }
+
+  /** Home is a quiet corner: the inner bottom corner of a panel, or of the window. */
+  chooseHome() {
+    const b = this.c.world.bounds;
+    const pool = this.corners();
+    const c = pool.length ? pool[Math.floor(Math.random() * pool.length)] : { x: b.x + 25, y: b.y + b.h - 25 };
+    this.homeX = c.x;
+    this.homeY = c.y;
+  }
+
+  private corners() {
+    const out: { x: number; y: number }[] = [];
+    for (const r of this.c.world.surfaces) {
+      if (r.w < 50 || r.h < 50) continue;
+      out.push({ x: r.x + 14, y: r.y + r.h - 14 }, { x: r.x + r.w - 14, y: r.y + r.h - 14 });
+    }
+    const b = this.c.world.bounds;
+    out.push({ x: b.x + 16, y: b.y + b.h - 16 }, { x: b.x + b.w - 16, y: b.y + b.h - 16 });
+    return out.filter((p) => this.c.world.inBounds(p.x, p.y, 8));
+  }
+
+  nearestSeam(within: number) {
+    const h = this.head;
+    let best = null, bd = within;
+    for (const s of this.c.world.edges) {
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const u = clamp(((h.x - s.x1) * dx + (h.y - s.y1) * dy) / (s.len * s.len), 0, 1);
+      const d = dist(h.x, h.y, s.x1 + dx * u, s.y1 + dy * u);
+      if (d < bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+
+  /**
+   * Turn back from the window edges, the shortest way round — unless it is heading for
+   * somewhere up against that edge on purpose (a tab, say).
+   */
+  steerFromWalls(margin: number, rate: number, toDest = false) {
+    const h = this.head, b = this.c.world.bounds;
+    const m = margin + 4;
+    const ok = (near: boolean) => !(toDest && near);
+    if (h.x < b.x + margin && ok(this.destX < b.x + m)) this.targetAngle = lerpAngle(this.targetAngle, 0, rate);
+    else if (h.x > b.x + b.w - margin && ok(this.destX > b.x + b.w - m)) this.targetAngle = lerpAngle(this.targetAngle, Math.PI, rate);
+    if (h.y < b.y + margin && ok(this.destY < b.y + m)) this.targetAngle = lerpAngle(this.targetAngle, Math.PI / 2, rate);
+    else if (h.y > b.y + b.h - margin && ok(this.destY > b.y + b.h - m)) this.targetAngle = lerpAngle(this.targetAngle, -Math.PI / 2, rate);
+  }
+
+  /** Pick somewhere to go and work out how to get there. */
+  pickDestination() {
+    this.chooseDestination();
+    this.planRoute(this.destX, this.destY);
+  }
+
+  /** Plan a way over the terrain to (x, y). */
+  planRoute(x: number, y: number) {
+    this.route = findRoute(this.c.world, this.head.x, this.head.y, x, y);
+    this.routeAt = 0;
+    this.routeTo = { x, y };
+  }
+
+  /**
+   * Where to steer now on the way to (x, y): the next waypoint of the planned route.
+   * Every few seconds, or if it has been pushed off course, it looks again: the note
+   * scrolls and panels move.
+   */
+  waypoint(x: number, y: number): Waypoint {
+    const h = this.head, to = this.routeTo;
+    if (!this.route || !to || dist(to.x, to.y, x, y) > 4 || this.burstTimer % 180 === 0) this.planRoute(x, y);
+    const r = this.route;
+    if (!r || !r.length) return { x, y };
+    while (this.routeAt < r.length - 1 && dist(h.x, h.y, r[this.routeAt].x, r[this.routeAt].y) < 6) this.routeAt++;
+    const wp = r[this.routeAt];
+    if (dist(h.x, h.y, wp.x, wp.y) > 40) { this.planRoute(x, y); return this.route?.[0] ?? { x, y }; }
+    return wp;
+  }
+
+  private chooseDestination() {
+    const w = this.c.world, b = w.bounds;
+    const set = (x: number, y: number) => { const q = w.clampToBounds(x, y, 12); this.destX = q.x; this.destY = q.y; };
+    if (this.needs.wantsSleepSoon() || this.forcedNap) { set(this.homeX, this.homeY); return; }
+    const f = this.needs.fullness;
+    const homeUrge = f > 0.9 ? 0.95 : f > 0.5 ? (f - 0.5) * 0.6 : 0;
+    if (homeUrge > 0 && Math.random() < homeUrge) { set(this.homeX + (Math.random() - 0.5) * 22, this.homeY + (Math.random() - 0.5) * 22); return; }
+    // Destinations stay within a few body lengths: a workspace is far bigger, in lizard
+    // terms, than the prototype's canvas was.
+    const h = this.head;
+    const near = (x: number, y: number) => 1 / (1 + dist(h.x, h.y, x, y) / 70);
+    const weighted = <T>(items: T[], weight: (t: T) => number): T | undefined => {
+      let k = Math.random() * items.reduce((a, t) => a + weight(t), 0);
+      for (const t of items) { k -= weight(t); if (k <= 0) return t; }
+      return items[0];
+    };
+    // Now and then, climb up onto something: a tab, or a heading.
+    if (w.perches.length && Math.random() < 0.12) {
+      const p = weighted(w.perches, (r) => near(r.x + r.w / 2, r.y + r.h / 2));
+      if (p && dist(h.x, h.y, p.x + p.w / 2, p.y + p.h / 2) < 190) {
+        const q = w.clampToBounds(p.x + p.w * (0.25 + Math.random() * 0.5), p.y + p.h / 2, 4);
+        this.destX = q.x; this.destY = q.y;
+        return;
+      }
+    }
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const r = Math.random();
+      let x: number, y: number;
+      if (r < 0.35 && w.edges.length) {
+        // Somewhere along a seam: longer and closer seams are likelier.
+        const e = weighted(w.edges, (s) => s.len * near((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2))!;
+        const u = Math.random();
+        x = e.x1 + (e.x2 - e.x1) * u; y = e.y1 + (e.y2 - e.y1) * u;
+      } else if (r < 0.5) {
+        const c = weighted(this.corners(), (p) => near(p.x, p.y) ** 2) ?? { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+        x = c.x; y = c.y;
+      } else {
+        const a = Math.random() * Math.PI * 2, d = 25 + Math.random() * 75;
+        x = h.x + Math.cos(a) * d; y = h.y + Math.sin(a) * d;
+      }
+      if (dist(h.x, h.y, x, y) > 190 || dist(h.x, h.y, x, y) < 12) continue;
+      // Anywhere goes, the sidebars and tabs included; it sits on your words only now and then.
+      ({ x, y } = w.clampToBounds(x, y, 12));
+      if (w.onText(x, y, 3) && Math.random() < 0.75) continue;
+      // The note is home ground; up on a panel is an excursion.
+      if (w.groundAt(x, y) >= 6 && Math.random() < 0.65) continue;
+      // Leave the place you're typing alone.
+      if (this.typing && w.caret && dist(x, y, w.caret.x, w.caret.y) < 45) continue;
+      set(x, y);
+      return;
+    }
+    set(this.homeX, this.homeY);
+  }
+
+  /** Something alarming at (x, y): a poke, a panel snapping open, typing right next to it. */
+  scare(x: number, y: number, mild = false) {
+    if (this.state === STATE.FLEE || this.state === STATE.STARTLE || this.state === STATE.HELD) return;
+    this.threatX = x;
+    this.threatY = y;
+    this.mildScare = mild || this.c.opts.reducedMotion;
+    this.forcedNap = false;
+    this.petted = false;
+    this.petTimer = 0;
+    this.enterState(mild ? STATE.FLEE : STATE.STARTLE);
+  }
+
+  /** Lifted off the ground by the user. */
+  pickUp() {
+    this.c.log?.('held', 'Was picked up');
+    this.dropLetter();
+    this.cover = null;
+    this.forcedNap = false;
+    this.petted = false;
+    this.petTimer = 0;
+    this.enterState(STATE.HELD);
+  }
+
+  /** Set down again: a moment frozen where it landed, then off it scurries. */
+  putDown() {
+    const b = this.body;
+    this.angle = this.targetAngle = b.heading;
+    // The threat is behind it, so it runs the way it is facing.
+    this.threatX = b.pts[12].x;
+    this.threatY = b.pts[12].y;
+    this.mildScare = this.c.opts.reducedMotion;
+    this.enterState(STATE.STARTLE);
+  }
+
+  /** Is it calm enough to take an interest in something new? */
+  get calm() {
+    const s = this.state;
+    return s === STATE.IDLE || s === STATE.EXPLORE || s === STATE.BASKING || s === STATE.LURK || s === STATE.CURIOUS;
+  }
+
+  /**
+   * Is it at `sd.spot`, near enough? Close by, a spot that is off to the side or behind
+   * would take a circle to reach — it can't turn on the spot — so it settles where it is.
+   */
+  arrived(sd: { spot: { x: number; y: number }; spin?: number; spinAt?: number; spinFrom?: number; lastAngle?: number }) {
+    const h = this.head, d = dist(h.x, h.y, sd.spot.x, sd.spot.y);
+    const settle = () => { sd.spot = { x: h.x, y: h.y }; sd.spin = 0; return true; };
+    if (d < 6) return true;
+    if (d < 18 && Math.abs(angleDiff(this.angle, Math.atan2(sd.spot.y - h.y, sd.spot.x - h.x))) > 1.2) return settle();
+    // Turning and turning without getting any nearer means it is circling: stop.
+    sd.spin = (sd.spin ?? 0) + Math.abs(angleDiff(sd.lastAngle ?? this.angle, this.angle));
+    sd.lastAngle = this.angle;
+    if (sd.spinAt === undefined || this.stateTimer - sd.spinAt > 45) {
+      const circling = sd.spin > 2.1 && d > (sd.spinFrom ?? Infinity) - 3;
+      sd.spin = 0; sd.spinAt = this.stateTimer; sd.spinFrom = d;
+      if (circling) return settle();
+    }
+    return false;
+  }
+
+  /** Is any of its head or trunk on, or right by, the text of the note? */
+  nearText() {
+    const w = this.c.world, b = this.body;
+    return [0, 6, 12, 18].some((i) => w.onText(b.pts[i].x, b.pts[i].y, 6));
+  }
+
+  /** Startle and dash from `from` (art px) to somewhere clear of the words, then watch warily. */
+  scurryFrom(from: { x: number; y: number }) {
+    const sd = this.stateData, h = this.head, w = this.c.world;
+    const away = Math.atan2(h.y - from.y, h.x - from.x);
+    let best: { x: number; y: number } | null = null, bestScore = -Infinity;
+    for (const r of [24, 34, 46, 60, 76, 96, 120]) {
+      for (let i = 0; i < 12; i++) {
+        const a = away + ((i - 5.5) / 6) * Math.PI;
+        const q = w.clampToBounds(h.x + Math.cos(a) * r, h.y + Math.sin(a) * r, 8);
+        if (w.onText(q.x, q.y, 8) || dist(q.x, q.y, from.x, from.y) < 26) continue;
+        // Nearest clear ground, leaning away from what it is fleeing.
+        const score = Math.cos(angleDiff(away, a)) * 20 - r;
+        if (score > bestScore) { bestScore = score; best = q; }
+      }
+      if (best) break;
+    }
+    sd.phase = 'scurry';
+    sd.phaseTimer = 0;
+    sd.spot = best ?? w.clampToBounds(h.x + Math.cos(away) * 40, h.y + Math.sin(away) * 40, 8);
+    this.planRoute(sd.spot.x, sd.spot.y);
+    this.flick();
+  }
+
+  /** Where to stalk the caret from: a little way off, on its own side, off the words if it can. */
+  lurkSpot(k: { x: number; y: number }, caret = true) {
+    const w = this.c.world, h = this.head;
+    const side = Math.atan2(h.y - k.y, h.x - k.x);
+    let fallback: { x: number; y: number } | null = null;
+    for (let i = 0; i < 16; i++) {
+      const a = side + (Math.random() - 0.5) * 1.8, d = 26 + Math.random() * 8;
+      const q = w.clampToBounds(k.x + Math.cos(a) * d, k.y + Math.sin(a) * d, 8);
+      fallback ??= q;
+      // Clear of the line being typed (and the one a new line would start on), off the words.
+      if ((!caret || Math.abs(q.y - k.y) >= 11) && !w.onText(q.x, q.y, 2)) return q;
+    }
+    return fallback!;
+  }
+
+  /** A modal opened over the workspace (its centre, art px), or closed (null). */
+  modalChanged(at: { x: number; y: number } | null) {
+    this.watching = at;
+    if (at && (this.calm || this.state === STATE.NIBBLE || this.state === STATE.INSPECT || this.state === STATE.HUNT)) this.enterState(STATE.WATCH);
+  }
+
+  /** A notice popped up just here (art px): hurry over, and pounce if it's still there. */
+  noticed(at: { x: number; y: number }, stillThere: () => boolean) {
+    if (!this.calm || this.distTo(at.x, at.y) > 260) return;
+    this.lure = at;
+    this.lureTicks = 1200;
+    this.lureThere = stillThere;
+    this.summon(at);
+    this.stateData.forLure = true;
+  }
+
+  /** Something is being dragged around here (art px), or was dropped (null): prey. */
+  dragged(at: { x: number; y: number } | null) {
+    this.lure = at;
+    this.lureTicks = at ? 60 : 0;
+    this.lureThere = null;
+    if (at && this.calm && this.distTo(at.x, at.y) < 120) { this.targetBug = null; this.enterState(STATE.HUNT); }
+  }
+
+  /** Scrolled out of view off the edge of the page: hurry back in to here (art px). */
+  comeBackTo(at: { x: number; y: number }) {
+    if (this.state === STATE.HELD || this.state === STATE.SLEEP) return;
+    this.summon(at);
+    this.stateData.hurry = true;
+  }
+
+  /**
+   * A different note or tab is open: everything around it has changed. By a side panel it
+   * scurries up onto it for safety; in a graph view it may start a game; on the note it
+   * scouts round the edges; otherwise it has a look round where it is.
+   */
+  newSurroundings(view: Rect | null, asked = false) {
+    this.route = null;
+    if (!asked && !this.calm && this.state !== STATE.SCOUT && this.state !== STATE.PLAY) return;
+    const w = this.c.world, h = this.head;
+    // (Asked to explore the note, it just does.)
+    for (const s of asked ? [] : w.sidebars) {
+      const dx = Math.max(s.x - h.x, 0, h.x - (s.x + s.w)), dy = Math.max(s.y - h.y, 0, h.y - (s.y + s.h));
+      if (dx === 0 && dy === 0) break;
+      if (Math.hypot(dx, dy) > 45) continue;
+      const left = s.x + s.w / 2 < h.x;
+      this.retreatTo = { x: left ? s.x + s.w - Math.min(28, s.w / 2) : s.x + Math.min(28, s.w / 2), y: clamp(h.y, s.y + 20, s.y + s.h - 20) };
+      this.retreatOut = { x: h.x, y: h.y };
+      this.enterState(STATE.RETREAT);
+      return;
+    }
+    if (!asked && this.playCooldown <= 0 && this.c.graph?.balls().some((b) => this.distTo(b.x, b.y) < 260)) { this.enterState(STATE.PLAY); return; }
+    if (view && h.x > view.x && h.x < view.x + view.w && h.y > view.y && h.y < view.y + view.h) {
+      // What's on screen of the note: its paragraphs, headings, code blocks and callouts.
+      const things = [...w.text, ...w.rocks].filter((t) => t.x >= view.x - 1 && t.x + t.w <= view.x + view.w + 1 && t.y >= view.y && t.y + t.h <= view.y + view.h && w.inBounds(t.x + t.w / 2, t.y + t.h / 2, 10));
+      if (things.length) {
+        things.sort((a, b) => a.y - b.y);
+        // Up to five, spread from top to bottom, starting from the nearer end.
+        const n = Math.min(5, things.length), picks: Rect[] = [];
+        for (let k = 0; k < n; k++) picks.push(things[Math.round((k * (things.length - 1)) / Math.max(1, n - 1))]);
+        if (Math.abs(h.y - picks[picks.length - 1].y) < Math.abs(h.y - picks[0].y)) picks.reverse();
+        this.scoutStops = picks.map((t) => ({ x: t.x + t.w * (0.15 + Math.random() * 0.7), y: t.y + t.h / 2 }));
+        this.enterState(STATE.SCOUT);
+        return;
+      }
+    }
+    this.enterState(STATE.IDLE);
+    this.stateData.nextLookTime = 5;
+    this.stateData.nextTongueTime = 25;
+  }
+
+  /** The page it is standing on scrolled by (dx, dy) art px: everything it had in mind moved too. */
+  shifted(dx: number, dy: number) {
+    this.destX += dx; this.destY += dy;
+    if (this.state === STATE.NAP && this.stateData.spot) {
+      for (const q of [this.stateData.spot, this.stateData.end]) { q.x += dx; q.y += dy; }
+      this.stateData.corner += dx;
+      this.stateData.ledge += dy;
+      if (this.stateData.x !== undefined) this.stateData.x += dx;
+    }
+    if (this.route) for (const p of this.route) { p.x += dx; p.y += dy; }
+    if (this.routeTo) { this.routeTo.x += dx; this.routeTo.y += dy; }
+    if (this.inkAt) { this.inkAt.x += dx; this.inkAt.y += dy; }
+  }
+
+  summon(target: { x: number; y: number }) {
+    this.enterState(STATE.EXPLORE);
+    this.destX = target.x;
+    this.destY = target.y;
+  }
+
+  /** Shortest distance from (x, y) to the head and trunk as drawn (lifted by height). */
+  bodyDistance(x: number, y: number) {
+    const b = this.body;
+    let best = Infinity;
+    for (let i = 0; i < TAIL_FIRST; i += 2) {
+      const p = b.project(b.pts[i].x, b.pts[i].y, b.z[i]);
+      best = Math.min(best, dist(p.x, p.y, x, y) - b.width(i) * (1 + NEARER * Math.max(0, b.z[i])));
+    }
+    return best;
+  }
+
+  preyAlive(b: Bug) { return b.alive && !b.leaving; }
+
+  dropLetter() { this.letter = null; this.letterAt = null; }
+
+  /** Snatch the target letter out of its word: hidden there, and now in its mouth (or stuck). */
+  stealLetter(stuck = false) {
+    const t = this.letter;
+    this.dropLetter();
+    if (!t || !this.c.nibbler.bite(t)) return false;
+    this.c.log?.('letter', `Stole the letter “${t.ch}”`);
+    this.c.reactions.carry(t.range, t.ch, stuck);
+    this.carrying = true;
+    this.body.flickTongue();
+    return true;
+  }
+
+  /** Where the snout tip is, in art px (as drawn). */
+  snout() {
+    const b = this.body, a = b.headAngle;
+    return b.project(b.pts[0].x + Math.cos(a) * 1.5, b.pts[0].y + Math.sin(a) * 1.5, b.z[0]);
+  }
+
+  /** Somewhere quiet nearby to eat: off the words, out in the open. */
+  eatingSpot() {
+    const w = this.c.world, h = this.head;
+    for (let i = 0; i < 16; i++) {
+      const a = this.angle + Math.PI + (Math.random() - 0.5) * 2.4, d = 20 + Math.random() * 25;
+      const q = w.clampToBounds(h.x + Math.cos(a) * d, h.y + Math.sin(a) * d, 10);
+      if (w.groundAt(q.x, q.y) === 0 && !w.onText(q.x, q.y, 3)) return q;
+    }
+    return { x: h.x, y: h.y };
+  }
+
+  get stateName() { return this.state + (this.petted ? '+petted' : ''); }
+
+  get asleep() { return this.state === STATE.SLEEP || this.state === STATE.NAP; }
+
+  /** What it's up to, in a few words, for the pet panel. */
+  get activity(): string {
+    const s = this.state, sd = this.stateData;
+    if (this.petted) return 'Being petted';
+    switch (s) {
+      case STATE.IDLE: return 'Looking around';
+      case STATE.BASKING: return 'Basking';
+      case STATE.EXPLORE: return 'Exploring';
+      case STATE.HUNT: return `Hunting a ${this.preyKind}`;
+      case STATE.FEAST: return 'Eating';
+      case STATE.STARTLE: case STATE.FLEE: return 'Startled';
+      case STATE.SLEEP: return 'Asleep';
+      case STATE.NAP: return sd.phase === 'asleep' ? 'Napping' : sd.phase === 'wake' ? 'Waking up' : 'Lying down for a nap';
+      case STATE.NIBBLE: return 'Going after a letter';
+      case STATE.HELD: return 'Being held';
+      case STATE.WATCH: return 'Watching';
+      case STATE.INSPECT: return 'Reading what you wrote';
+      case STATE.LURK: return sd.target === 'caret' ? 'Watching you type' : 'Watching your pointer';
+      case STATE.CURIOUS: return 'Curious';
+      case STATE.SCOUT: return 'Exploring the note';
+      case STATE.RETREAT: return 'Hiding on the side panel';
+      case STATE.PLAY: return 'Playing';
+      case STATE.PRANK: return sd.target?.kind === 'food' ? 'Asking for food' : 'Up to something';
+      case STATE.SEARCH: return 'Following your search';
+      default: return s;
+    }
+  }
+
+  /** Do what the pet panel asks. Returns a few words to show if it can't, or null. */
+  command(cmd: string): string | null {
+    if (this.state === STATE.HELD) return "Put it down first";
+    const asleep = this.state === STATE.SLEEP || this.state === STATE.NAP;
+    switch (cmd) {
+      case 'sleep': {
+        if (asleep) return 'Already asleep';
+        this.napCooldown = 0;
+        if (this.findNapRock(Infinity)) { this.enterState(STATE.NAP); return null; }
+        // No block to nap on: home to bed.
+        this.needs.sleepiness = 1;
+        this.needs.hunger = Math.max(this.needs.hunger, 30);
+        this.summon({ x: this.homeX, y: this.homeY });
+        return 'No code block or callout to nap on: heading home to sleep';
+      }
+      case 'wake':
+        if (!asleep) return "It's awake";
+        if (this.state === STATE.NAP && this.stateData.phase === 'asleep') { this.stateData.phase = 'wake'; this.stateData.t = 0; }
+        else if (this.state === STATE.NAP) this.enterState(STATE.IDLE);
+        else { this.forcedNap = false; this.needs.sleepiness = 0; this.enterState(STATE.IDLE); this.blink(); }
+        return null;
+      case 'explore':
+        this.enterState(STATE.EXPLORE);
+        return null;
+      case 'eat':
+        this.needs.hunger = Math.min(this.needs.hunger, 40);
+        if (asleep) this.command('wake');
+        return null;
+      case 'play':
+        if (!this.c.graph?.balls().length) return 'Open the graph view for it to play in';
+        this.playCooldown = 0;
+        this.enterState(STATE.PLAY);
+        return null;
+      case 'pushups':
+        this.enterState(STATE.IDLE);
+        this.stateData.duration = 600;
+        this.schedulePushups(4);
+        return null;
+      case 'bask':
+        this.enterState(STATE.BASKING);
+        return null;
+      case 'nibble':
+        if (!this.c.opts.nibble) return 'Letter stealing is off in settings';
+        this.nextNibble = 0;
+        if (asleep || (this.state !== STATE.IDLE && this.state !== STATE.EXPLORE && this.state !== STATE.BASKING)) this.enterState(STATE.IDLE);
+        return null;
+      case 'prank': {
+        const ts = (this.c.pranks?.targets() ?? []).filter((t) => t.kind === 'mischief');
+        if (!ts.length) return 'Nothing to get up to here';
+        this.prankTarget = ts.find((t) => t.due) ?? ts[Math.floor(Math.random() * ts.length)];
+        this.enterState(STATE.PRANK);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // ── Perception ────────────────────────────────────────────────
+
+  private checkInterrupts(cursorDist: number) {
+    const st = this.state, p = this.pointer;
+    if (p && st !== STATE.STARTLE && st !== STATE.FLEE && st !== STATE.HUNT) {
+      if (this.cursorSpeed > this.traits.resolve('startleSpeed') * S && cursorDist < this.traits.resolve('startleDist') * S) { this.scareFrom(p); return; }
+    }
+    // On or by the text, a pointer coming near always sends it scurrying clear of the words,
+    // so it is never in the way of a click there.
+    const scurrying = st === STATE.LURK && this.stateData.phase === 'scurry';
+    if (p && !scurrying && this.calm && cursorDist < 30 && this.bodyDistance(p.x, p.y) < 14 && this.nearText()) {
+      this.lurkTarget = 'pointer';
+      this.enterState(STATE.LURK);
+      this.scurryFrom(p);
+      return;
+    }
+    // A resting pointer catches its eye from some way off (it never hunts it).
+    if (p && !this.petted && !this.typing && (st === STATE.IDLE || st === STATE.BASKING || st === STATE.EXPLORE)) {
+      if (cursorDist < CURIOUS_RADIUS && this.cursorSpeed < 4 * S && this.curiousCooldown <= 0 && Math.random() < 0.01) {
+        this.enterState(STATE.CURIOUS);
+        return;
+      }
+    }
+    if (this.needs.hunger >= 90 && st !== STATE.SLEEP && st !== STATE.FLEE && st !== STATE.STARTLE && st !== STATE.HUNT) {
+      if (this.distTo(this.homeX, this.homeY) < 80 * S && this.needs.sleepiness > 0.2) { this.enterState(STATE.SLEEP); return; }
+    }
+    if (st === STATE.SLEEP && this.targetBug && !this.userIdle && this.distTo(this.targetBug.x, this.targetBug.y) < 40 * S) { this.forcedNap = false; this.enterState(STATE.HUNT); return; }
+    if (st === STATE.SLEEP && p && this.cursorSpeed > this.traits.resolve('startleSpeed') * 0.7 * S && cursorDist < this.traits.resolve('startleDist') * 1.3 * S) { this.scareFrom(p); return; }
+    // You've gone quiet: head home and settle in.
+    if (this.userIdle && st !== STATE.SLEEP && st !== STATE.NAP && st !== STATE.HUNT && st !== STATE.FLEE && st !== STATE.STARTLE) {
+      this.forcedNap = true;
+      if (this.distTo(this.homeX, this.homeY) < 60 * S || st === STATE.BASKING) this.enterState(STATE.SLEEP);
+      else if (st !== STATE.EXPLORE) this.enterState(STATE.EXPLORE);
+    }
+  }
+
+  private scareFrom(p: { x: number; y: number }) {
+    this.threatX = p.x;
+    this.threatY = p.y;
+    this.mildScare = this.c.opts.reducedMotion;
+    this.forcedNap = false;
+    this.petted = false;
+    this.petTimer = 0;
+    this.enterState(STATE.STARTLE);
+  }
+
+  private detectBugs() {
+    const head = this.head;
+    const keep = this.state === STATE.HUNT ? this.targetBug : null;
+    this.targetBug = null;
+    let nearest = this.needs.sightRange;
+    for (const bug of this.c.swarm.bugs) {
+      if (!this.preyAlive(bug)) continue;
+      const bd = dist(head.x, head.y, bug.x, bug.y);
+      if (bd < nearest) { nearest = bd; this.targetBug = bug; }
+      if (bd < 10 * S && bug.catchable && this.state !== STATE.FEAST) {
+        bug.alive = false;
+        this.needs.feed(bug.kind === 'cricket' ? 40 : 15);
+        this.c.log?.('catch', `Caught a ${bug.kind}`);
+        this.c.particles.burst(bug.x, bug.y, this.c.pal.wing, bug.kind === 'cricket' ? 5 : 4, 14);
+        this.preyKind = bug.kind;
+        this.enterState(STATE.FEAST);
+      }
+      // Prey that sees the lizard coming may bolt; a stalking lizard is far harder to spot.
+      const facing = Math.abs(angleDiff(this.angle, Math.atan2(bug.y - head.y, bug.x - head.x))) < 0.8;
+      const stalking = this.state === STATE.HUNT;
+      if (facing && bd < (stalking ? 20 : 80) * S && Math.random() < (stalking ? 0.08 : 0.02)) bug.startle(head.x, head.y);
+    }
+    if (keep && this.preyAlive(keep) && !this.targetBug) this.targetBug = keep;
+    if (this.targetBug && this.state !== STATE.STARTLE && this.state !== STATE.FLEE && this.state !== STATE.HUNT && this.state !== STATE.SLEEP && this.state !== STATE.NIBBLE && this.state !== STATE.FEAST) {
+      if (Math.random() < this.needs.huntEagerness * 0.1) this.enterState(STATE.HUNT);
+    }
+  }
+
+  private updatePetting() {
+    const p = this.pointer, st = this.state;
+    // Petting: a pointer held still on it, or stroking it gently back and forth, out in the
+    // open (by the words it scurries off instead). A stroke runs a little past its edges.
+    const calm = (st === STATE.IDLE || st === STATE.BASKING || st === STATE.EXPLORE || st === STATE.SLEEP || st === STATE.LURK || st === STATE.CURIOUS)
+      && !(st === STATE.LURK && this.stateData.target === 'caret') && !this.nearText();
+    const d = p ? this.bodyDistance(p.x, p.y) : Infinity, v = this.cursorSpeed;
+    const resting = d < 1.5 && v < 1.5 * S;
+    const stroking = d < 3.5 && v > 0.1 && v < Math.min(2.5 * S, this.traits.resolve('startleSpeed') * S * 0.6);
+    const over = !!p && calm && (resting || stroking);
+    this.petTimer = over ? Math.min(40, this.petTimer + 1) : Math.max(0, this.petTimer - (p && d < 6 ? 1 : 2));
+    const was = this.petted;
+    this.petted = this.petTimer > 20;
+    if (this.petted && !was) this.c.log?.('petted', 'Was petted');
+    if (this.petted && !was && st !== STATE.SLEEP && st !== STATE.BASKING) this.enterState(STATE.BASKING);
+    if (!this.petted && was && this.state === STATE.BASKING && Math.random() < 0.6) this.body.flickTongue('lick');
+  }
+
+  /** Pokes, panels sweeping past, typing alongside. */
+  private disturbances() {
+    const c = this.c, px = c.world.px;
+    for (const p of c.input.presses.splice(0)) {
+      const x = p.x / px, y = p.y / px;
+      // A click on a panel it is hiding under lands on the panel, not on the gecko.
+      if (this.body.under && c.world.coverAt(x, y)) continue;
+      for (const bug of c.swarm.bugs) if (dist(bug.x, bug.y, x, y) < 6) bug.startle(x, y);
+      if (this.bodyDistance(x, y) < 3) { this.scare(x, y); return; }
+    }
+    if (c.world.shifts.length) {
+      const h = this.head;
+      for (const s of c.world.shifts) {
+        if (h.x > s.x - 10 && h.x < s.x + s.w + 10 && h.y > s.y - 10 && h.y < s.y + s.h + 10) {
+          this.scare(h.x - s.x < s.x + s.w - h.x ? s.x : s.x + s.w, h.y, c.opts.reducedMotion);
+          break;
+        }
+      }
+      c.world.shifts.length = 0;
+    }
+    const k = c.world.caret;
+    // (Stalking the caret, it keeps its own distance.)
+    if (this.typing && k && this.state !== STATE.FLEE && this.state !== STATE.STARTLE && this.state !== STATE.LURK && this.bodyDistance(k.x, k.y) < 12) this.scare(k.x, k.y, true);
+  }
+
+  /** Every few minutes, offer it a letter to nibble — only when you're not typing. */
+  private scheduleNibble() {
+    const c = this.c, now = c.now;
+    if (this.letter) {
+      this.trackIn--;
+      if (this.trackIn <= 0) {
+        this.trackIn = 24;
+        const at = c.nibbler.locate(this.letter);
+        if (!at || now - this.letterSince > 60000 || c.input.typedWithin(now, 1500)) this.dropLetter();
+        else this.letterAt = { x: at.x / c.world.px, y: at.y / c.world.px };
+      }
+      return;
+    }
+    if (!c.opts.nibble || now < this.nextNibble || c.input.typedWithin(now, 12000) || c.nibbler.count >= 3) return;
+    const st = this.state;
+    if (st !== STATE.IDLE && st !== STATE.EXPLORE && st !== STATE.BASKING) return;
+    this.nextNibble = now + rand(...NIBBLE_EVERY) * 1000;
+    const caret = c.world.caret ? { x: c.world.caret.x * c.world.px, y: c.world.caret.y * c.world.px } : null;
+    const t = c.nibbler.pickTarget(caret, 160);
+    if (!t) return;
+    this.letter = t;
+    this.letterSince = now;
+    this.letterAt = { x: t.x / c.world.px, y: t.y / c.world.px };
+  }
+
+  // ── Tick ──────────────────────────────────────────────────────
+
+  /** One 60 Hz tick. Returns how the body should move. */
+  update(): Drive {
+    const c = this.c, b = this.body;
+    this.stateTimer++;
+    this.burstTimer++;
+    if (this.hideCooldown > 0) this.hideCooldown--;
+    if (this.playCooldown > 0) this.playCooldown--;
+    if (this.mischiefCooldown > 0) this.mischiefCooldown--;
+    if (this.alarm > 0) this.alarm--;
+    if (this.snackCooldown > 0) this.snackCooldown--;
+    if (this.searchCooldown > 0) this.searchCooldown--;
+    // You're searching the note: it comes to help.
+    const free = this.state === STATE.IDLE || this.state === STATE.BASKING || this.state === STATE.EXPLORE || this.state === STATE.CURIOUS || this.state === STATE.SCOUT;
+    if (this.searchCooldown <= 0 && this.c.world.matches.length && this.calm && free) this.enterState(STATE.SEARCH);
+    if (this.napCooldown > 0) this.napCooldown--;
+    this.typing = c.input.typedWithin(c.now, 3500);
+    // A notice goes away by itself after a few seconds; a drag lure is refreshed while it moves.
+    if (this.lure && (--this.lureTicks <= 0 || (this.lureThere && !this.lureThere()))) { this.lure = null; this.lureThere = null; }
+    // You're typing: now and then it creeps over to lurk nearby and watch.
+    if (this.lurkCooldown > 0) this.lurkCooldown--;
+    if (this.curiousCooldown > 0) this.curiousCooldown--;
+    const caret = c.world.caret;
+    const onCaret = this.state === STATE.LURK && this.stateData.target === 'caret';
+    if (!onCaret && this.lurkCooldown <= 0 && this.calm && caret && this.typing && Math.random() < 0.04) {
+      const d = this.distTo(caret.x, caret.y);
+      if (d > 30) { this.lurkTarget = 'caret'; this.enterState(STATE.LURK); }
+    }
+    // You wrote something and stopped: come and have a look.
+    if (this.calm && c.world.lastCaret && c.input.claimFreshInk(c.now)) {
+      const k = c.world.lastCaret;
+      this.inkAt = { x: k.x, y: k.y };
+      this.enterState(STATE.INSPECT);
+    }
+    this.userIdle = c.input.idleFor(c.now) > c.opts.sleepAfterMs;
+    if (this.entering && c.world.inBounds(this.head.x, this.head.y, 6)) this.entering = false;
+    if (!c.world.inBounds(this.homeX, this.homeY, 8)) this.chooseHome();
+
+    this.needs.update(this.state);
+    this.speed = (this.traits.resolve('baseSpeed') + this.traits.resolve('speedBoost')) * S;
+
+    const p = this.pointer;
+    this.cursorSpeed = p && this.lastCursor ? dist(p.x, p.y, this.lastCursor.x, this.lastCursor.y) : 0;
+    this.lastCursor = p ? { ...p } : null;
+    const cursorDist = p ? this.distTo(p.x, p.y) : Infinity;
+
+    if (this.state !== STATE.HELD) {
+      this.disturbances();
+      this.scheduleNibble();
+      this.detectBugs();
+      this.checkInterrupts(cursorDist);
+      this.updatePetting();
+    }
+
+    const result = StateHandlers[this.state].update(this);
+    if (result.transition) this.enterState(result.transition);
+    this.headLook.update();
+
+    // ── Movement, as the original computed it ──
+    let targetSpeed = result.targetSpeed;
+    if (this.state !== STATE.FLEE && this.state !== STATE.STARTLE) targetSpeed *= this.needs.fullnessSlowdown;
+    if (this.petted) targetSpeed = 0;
+    const turnRate = this.state === STATE.HUNT ? (this.stateData.phase === 'lunge' ? 0.3 : 0.08) : this.state === STATE.SLEEP ? 0.02 : this.state === STATE.FLEE && !this.mildScare && !this.c.opts.reducedMotion ? 0.2 : 0.06;
+    this.angle += angleDiff(this.angle, this.targetAngle) * turnRate;
+    this.currentSpeed = lerp(this.currentSpeed, targetSpeed, 0.05);
+
+    // ── Body expression ──
+    const sleeping = this.state === STATE.SLEEP;
+    const napping = this.state === STATE.NAP && (this.stateData.phase === 'settle' || this.stateData.phase === 'asleep');
+    b.curlTarget = sleeping || napping ? 1 : 0;
+    b.lidTarget = sleeping ? (this.sleepPeeking ? 0.25 : 1) : this.state === STATE.NAP && this.stateData.lids ? this.stateData.lids : this.petted ? 0.55 : this.state === STATE.BASKING && this.stateData.onWarm ? 0.5 : 0;
+    b.breathRate = sleeping || napping || this.state === STATE.BASKING || this.petted ? 0.29 : 0.57;
+    b.breathDepth = sleeping ? 0.085 : 0.05;
+    b.tailTwitch = this.state === STATE.HUNT && this.stateData.phase === 'ready' ? 1 : this.state === STATE.PLAY ? 0.8 : this.state === STATE.PRANK && this.stateData.phase === 'raise' ? 0.6 : this.state === STATE.HELD ? 0.8 : this.state === STATE.LURK && (this.stateData.frozen || this.stateData.phase === 'wary') ? 0.5 : this.state === STATE.NIBBLE && this.stateData.phase === 'grab' && this.stateData.stuck ? 0.6 : this.state === STATE.HUNT ? 0.7 : this.state === STATE.STARTLE ? (this.stateTimer < 10 ? 1 : 0) : 0;
+    if (this.mouthTicks > 0) { this.mouthTicks--; b.mouthTarget = this.mouthTicks > 4 ? 1 : 0.4; }
+    else if (this.state !== STATE.NIBBLE && this.state !== STATE.HUNT && this.state !== STATE.FEAST) b.mouthTarget = 0;
+    if (this.state !== STATE.HUNT && this.state !== STATE.PLAY) b.wiggle = 0;
+    if (this.state !== STATE.FEAST) b.gulp = -1;
+    if (this.state !== STATE.IDLE && this.state !== STATE.BASKING) { this.display = null; if (this.state !== STATE.NAP && this.state !== STATE.PLAY && this.state !== STATE.PRANK) b.pushup = 0; }
+    if (this.state !== STATE.STARTLE) b.hop = 0;
+    if (this.state !== STATE.PRANK) {
+      b.reach = null;
+      // Off it went mid-press (after a fly, say): the button goes back to normal.
+      if (this.pressing) { this.pressing.down(false); this.pressing.hover(false); this.pressing = null; }
+    }
+
+    const slow = clamp(1 - this.currentSpeed / (this.speed || 1), 0, 1);
+    return {
+      heading: this.angle,
+      // The prototype's speeds suit its longer legs; this body covers ground in shorter strides.
+      speed: this.currentSpeed * 60 * 0.65,
+      accel: 2400,
+      turnRate: 24,
+      look: this.angle + this.headLook.offset * slow,
+    };
+  }
+}

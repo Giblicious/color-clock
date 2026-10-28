@@ -1,9 +1,13 @@
 import { nextChange, periodAt } from "/schedule.js";
 
-const defaults = { dayStart: "07:00", nightStart: "19:00", dayColor: "#16a34a", nightColor: "#dc2626", showStatus: false, showTime: false, dayLabel: "", nightLabel: "" };
+const defaults = { dayStart: "07:00", nightStart: "19:00", dayColor: "#16a34a", nightColor: "#dc2626", showStatus: false, showTime: false, dayLabel: "", nightLabel: "", pet: true };
 const palette = ["#16a34a", "#22c55e", "#0ea5e9", "#2563eb", "#7c3aed", "#db2777", "#dc2626", "#ea580c", "#f59e0b", "#facc15", "#ffffff", "#64748b", "#1e293b", "#000000"];
 const drift = [[0, 0], [6, -4], [-5, 5], [4, 7], [-7, -3], [3, -7], [-3, 4], [7, 2]];
 const storageKey = "color-clock-settings-v1";
+/** The gecko gets sleepy and heads to bed this long before night (ms). */
+const windDown = 10 * 60_000;
+/** Inside the Android app, which owns settings and pushes them in. */
+const embedded = new URLSearchParams(location.search).has("embed");
 const $ = (selector) => document.querySelector(selector);
 const sheet = $("#settings");
 const overlay = $("#overlay");
@@ -14,8 +18,11 @@ let wakeLock = null;
 let wantsWakeLock = false;
 let overlayTimer;
 let toastTimer;
+let pet = null;
+let petLoading = false;
 
 function loadSettings() {
+  if (embedded) return { ...defaults };
   try { return { ...defaults, ...JSON.parse(localStorage.getItem(storageKey) || "{}") }; }
   catch { return { ...defaults }; }
 }
@@ -58,6 +65,27 @@ function render() {
   const [x, y] = drift[now.getMinutes() % drift.length];
   document.documentElement.style.setProperty("--drift-x", `${x}px`);
   document.documentElement.style.setProperty("--drift-y", `${y}px`);
+
+  // The pet keeps the real time of day, even while a different period is being previewed.
+  const dusk = actual === "day" && nextChange(now, "day", shown.dayStart, shown.nightStart) - now <= windDown;
+  const realColor = shown[`${actual}Color`];
+  updatePet(shown, { dayColor: shown.dayColor, nightColor: shown.nightColor, background: color, ink: isLight(realColor) ? "#111111" : "#f8fafc", period: actual === "night" ? "night" : dusk ? "dusk" : "day" });
+}
+
+/** Starts, updates or removes the gecko; its code only loads once it's switched on. */
+function updatePet(shown, scene) {
+  if (!shown.pet) {
+    pet?.destroy();
+    pet = null;
+    return;
+  }
+  if (pet) { pet.update(scene); return; }
+  if (petLoading) return;
+  petLoading = true;
+  import("/pet.js")
+    .then(({ startClockPet }) => { if ((draft || settings).pet && !pet) pet = startClockPet(window, scene); })
+    .catch((error) => console.error("Couldn't load the pet", error))
+    .finally(() => { petLoading = false; });
 }
 
 function revealOverlay() {
@@ -86,6 +114,7 @@ function openSheet() {
   coverScreen();
   $("#show-time").checked = draft.showTime;
   $("#show-status").checked = draft.showStatus;
+  $("#show-pet").checked = draft.pet;
   selectPeriod(editing);
   $("#save-settings").focus();
 }
@@ -163,6 +192,7 @@ $("#color").addEventListener("input", (event) => updateDraft("Color", event.targ
 $("#label-input").addEventListener("input", (event) => updateDraft("Label", event.target.value.trim()));
 $("#show-time").addEventListener("change", (event) => { draft.showTime = event.target.checked; render(); });
 $("#show-status").addEventListener("change", (event) => { draft.showStatus = event.target.checked; render(); });
+$("#show-pet").addEventListener("change", (event) => { draft.pet = event.target.checked; render(); });
 $("#open-settings").addEventListener("click", openSheet);
 $("#cancel-settings").addEventListener("click", closeSheet);
 $("#scrim").addEventListener("click", closeSheet);
@@ -194,6 +224,11 @@ async function requestWakeLock() {
 $("#wake-lock").addEventListener("click", requestWakeLock);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && wantsWakeLock && !wakeLock) requestWakeLock(); });
 
+if (embedded) {
+  document.body.classList.add("embedded");
+  // The app calls this with its settings whenever they change.
+  window.colorClock = { apply(next) { settings = { ...defaults, ...next }; render(); } };
+}
 render();
 setInterval(render, 1_000);
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+if (!embedded && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");

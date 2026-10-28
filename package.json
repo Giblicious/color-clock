@@ -4,13 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check public/app.js && node --check public/schedule.js && node --check public/sw.js && node --check tools/dev-server.mjs && node --check tools/android-release.mjs && npm test",
+    "check": "npm run pet:typecheck && node --check public/app.js && node --check public/schedule.js && node --check public/sw.js && node --check tools/dev-server.mjs && node --check tools/android-release.mjs && npm test",
     "dev": "node tools/dev-server.mjs",
     "test": "node --test test/*.test.js",
     "android:build": "node tools/android-release.mjs --build-only",
-    "android:release": "node tools/android-release.mjs --bump"
+    "android:release": "node tools/android-release.mjs --bump",
+    "pet:build": "esbuild pet/clock.ts --bundle --format=esm --target=es2020 --minify --legal-comments=none --outfile=public/pet.js",
+    "pet:typecheck": "tsc -p pet"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.3",
+    "typescript": "^5.8.3"
   }
 }

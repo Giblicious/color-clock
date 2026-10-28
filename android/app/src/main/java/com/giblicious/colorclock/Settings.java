@@ -16,6 +16,7 @@ final class Settings {
     String nightColor = "#dc2626";
     boolean showStatus = false;
     boolean showTime = false;
+    boolean pet = true;
     int dayBrightness = 100;
     int nightBrightness = 100;
     String dayLabel = "";
@@ -32,6 +33,7 @@ final class Settings {
             settings.nightColor = color(object.optString("nightColor"), settings.nightColor);
             settings.showStatus = object.optBoolean("showStatus", settings.showStatus);
             settings.showTime = object.optBoolean("showTime", settings.showTime);
+            settings.pet = object.optBoolean("pet", settings.pet);
             settings.dayBrightness = brightness(object.optInt("dayBrightness", settings.dayBrightness));
             settings.nightBrightness = brightness(object.optInt("nightBrightness", settings.nightBrightness));
             settings.dayLabel = label(object.optString("dayLabel"));
@@ -51,6 +53,7 @@ final class Settings {
                     .put("nightColor", nightColor)
                     .put("showStatus", showStatus)
                     .put("showTime", showTime)
+                    .put("pet", pet)
                     .put("dayBrightness", dayBrightness)
                     .put("nightBrightness", nightBrightness)
                     .put("dayLabel", dayLabel)

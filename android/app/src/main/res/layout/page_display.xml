@@ -48,7 +48,7 @@
 
                 <TextView
                     style="@style/Settings.Body"
-                    android:text="Shows the time in the middle of the screen" />
+                    android:text="The time, big, in the middle" />
             </LinearLayout>
 
             <ImageView
@@ -105,15 +105,75 @@
 
                 <TextView
                     style="@style/Settings.Title"
-                    android:text="Next change reminder" />
+                    android:text="Reminder" />
 
                 <TextView
                     style="@style/Settings.Body"
-                    android:text="A small note saying when the color changes" />
+                    android:text="When the color changes" />
             </LinearLayout>
 
             <ImageView
                 android:id="@+id/check_status"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/bg_check"
+                android:contentDescription="On"
+                android:padding="6dp"
+                android:src="@drawable/ic_check" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/tile_pet"
+        style="@style/Settings.Card"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1"
+        android:clickable="true"
+        android:focusable="true">
+
+        <FrameLayout
+            android:id="@+id/mini_pet"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <ImageView
+                android:id="@+id/mini_pet_image"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:adjustViewBounds="true"
+                android:contentDescription="A pixel gecko"
+                android:src="@drawable/gecko"
+                android:maxWidth="190dp"
+                android:scaleType="fitCenter" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center_vertical">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    style="@style/Settings.Title"
+                    android:text="Gecko" />
+
+                <TextView
+                    style="@style/Settings.Body"
+                    android:text="Plays by day, sleeps at night" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/check_pet"
                 android:layout_width="32dp"
                 android:layout_height="32dp"
                 android:background="@drawable/bg_check"
