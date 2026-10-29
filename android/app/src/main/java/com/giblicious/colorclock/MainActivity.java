@@ -31,6 +31,8 @@ public class MainActivity extends Activity {
     /** Burn-in drift positions in dp, stepped through once a minute. */
     private static final float[][] DRIFT = {{0, 0}, {6, -4}, {-5, 5}, {4, 7}, {-7, -3}, {3, -7}, {-3, 4}, {7, 2}};
     private static final long UPDATE_INTERVAL_MS = 6 * DateUtils.HOUR_IN_MILLIS;
+    /** How long the change from day to night (and back) takes; matches the web display's. */
+    private static final long PERIOD_FADE_MS = 15_000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -65,6 +67,9 @@ public class MainActivity extends Activity {
     private float previewBrightness = -1;
     private float appliedBrightness = -1;
     private int appliedDrift = -1;
+    /** Which period was showing last frame (null before the first), to spot the change. */
+    private Boolean lastDay;
+    private android.animation.ValueAnimator brightnessRamp;
     private int lockedTaps;
     private long firstLockedTap;
     private volatile String updateStatus = "";
@@ -174,7 +179,10 @@ public class MainActivity extends Activity {
             status = (day ? "Day" : "Night") + " · changes " + DateFormat.format(pattern, settings.nextChange(now, day));
         }
         String label = day ? settings.dayLabel : settings.nightLabel;
-        screen.show(Color.parseColor(day ? settings.dayColor : settings.nightColor), clock, label, status, false);
+        // The real change from day to night (or back) is a slow fade; settings edits are quick.
+        boolean turning = lastDay != null && lastDay != day;
+        lastDay = day;
+        screen.show(Color.parseColor(day ? settings.dayColor : settings.nightColor), clock, label, status, false, turning ? PERIOD_FADE_MS : 1_200);
 
         int drift = now.get(Calendar.MINUTE) % DRIFT.length;
         if (drift != appliedDrift) {
@@ -183,12 +191,29 @@ public class MainActivity extends Activity {
         }
 
         float brightness = previewBrightness >= 0 ? previewBrightness : (day ? settings.dayBrightness : settings.nightBrightness) / 100f;
-        if (brightness != appliedBrightness) {
-            WindowManager.LayoutParams attributes = getWindow().getAttributes();
-            attributes.screenBrightness = brightness;
-            getWindow().setAttributes(attributes);
-            appliedBrightness = brightness;
+        if (turning && previewBrightness < 0 && appliedBrightness >= 0) rampBrightness(appliedBrightness, brightness);
+        else if (brightness != appliedBrightness && (brightnessRamp == null || !brightnessRamp.isRunning() || previewBrightness >= 0)) {
+            if (brightnessRamp != null) brightnessRamp.cancel();
+            setBrightness(brightness);
         }
+    }
+
+    /** Eases the screen brightness from one level to the other over the day/night fade. */
+    private void rampBrightness(float from, float to) {
+        if (brightnessRamp != null) brightnessRamp.cancel();
+        if (from == to) return;
+        brightnessRamp = android.animation.ValueAnimator.ofFloat(from, to);
+        brightnessRamp.setDuration(PERIOD_FADE_MS);
+        brightnessRamp.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        brightnessRamp.addUpdateListener(a -> setBrightness((float) a.getAnimatedValue()));
+        brightnessRamp.start();
+    }
+
+    private void setBrightness(float brightness) {
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        attributes.screenBrightness = brightness;
+        getWindow().setAttributes(attributes);
+        appliedBrightness = brightness;
     }
 
     /**

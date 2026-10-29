@@ -51,6 +51,11 @@ final class ScreenView extends View {
 
     /** Updates what is shown; a new color fades in unless {@code instant} is set. */
     void show(int color, String clock, String label, String status, boolean instant) {
+        show(color, clock, label, status, instant, FADE_MS);
+    }
+
+    /** As above, fading a new color in over {@code fadeMs} (the slow day/night change). */
+    void show(int color, String clock, String label, String status, boolean instant, long fadeMs) {
         this.clock = clock;
         this.label = label == null || label.isEmpty() ? null : label;
         this.status = status;
@@ -62,8 +67,8 @@ final class ScreenView extends View {
             targetColor = color;
             if (fade != null) fade.cancel();
             fade = ValueAnimator.ofObject(new ArgbEvaluator(), this.color, color);
-            fade.setDuration(FADE_MS);
-            fade.setInterpolator(new DecelerateInterpolator());
+            fade.setDuration(fadeMs);
+            fade.setInterpolator(fadeMs > FADE_MS ? new android.view.animation.AccelerateDecelerateInterpolator() : new DecelerateInterpolator());
             fade.addUpdateListener(animation -> { this.color = (int) animation.getAnimatedValue(); invalidate(); });
             fade.start();
         }

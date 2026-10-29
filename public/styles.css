@@ -17,7 +17,8 @@
 body[data-ink="dark"] { --ink: 0 0 0; --ink-alpha: .22; }
 * { box-sizing: border-box; }
 html, body, #screen { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { background: #16a34a; transition: background-color 1.2s ease-out; }
+/* --fade is set to the long day/night fade while the period turns (see app.js). */
+body { background: #16a34a; transition: background-color var(--fade, 1.2s) ease-in-out; }
 button, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 [hidden] { display: none !important; }
@@ -33,6 +34,8 @@ button { cursor: pointer; }
   user-select: none; text-align: center; padding: 0 4cqw;
   container-type: size;
 }
+.clock, .label, .status { transition: color var(--fade, 1.2s) ease-in-out, background-color var(--fade, 1.2s) ease-in-out, opacity 1.2s ease-in-out; }
+.status { transition: color var(--fade, 1.2s) ease-in-out, background-color var(--fade, 1.2s) ease-in-out, left 280ms, bottom 280ms; }
 .clock {
   color: rgb(var(--ink) / var(--ink-alpha));
   font-size: min(19cqw, 40cqh, 17rem); font-weight: 900; font-variant-numeric: tabular-nums;
@@ -44,7 +47,7 @@ button { cursor: pointer; }
   position: fixed; left: calc((100% - var(--covered-right)) / 2); bottom: calc(max(22px, env(safe-area-inset-bottom)) + var(--covered-bottom));
   transform: translateX(-50%); padding: 8px 15px; border-radius: 999px;
   color: rgb(var(--ink)); background: rgb(var(--ink) / .1); backdrop-filter: blur(6px);
-  font-size: .92rem; font-weight: 500; white-space: nowrap; transition: left 280ms, bottom 280ms;
+  font-size: .92rem; font-weight: 500; white-space: nowrap;
 }
 
 /* Tap overlay */

@@ -6,6 +6,8 @@ const drift = [[0, 0], [6, -4], [-5, 5], [4, 7], [-7, -3], [3, -7], [-3, 4], [7,
 const storageKey = "color-clock-settings-v1";
 /** The gecko gets sleepy and heads to bed this long before night (ms). */
 const windDown = 10 * 60_000;
+/** How long the change from day to night (and back) takes (ms). Settings edits stay quick. */
+const periodFade = 15_000;
 /** Inside the Android app, which owns settings and pushes them in. */
 const embedded = new URLSearchParams(location.search).has("embed");
 const $ = (selector) => document.querySelector(selector);
@@ -20,6 +22,10 @@ let overlayTimer;
 let toastTimer;
 let pet = null;
 let petLoading = false;
+let lastPeriod = null;
+let fadeTimer;
+let labelTimer;
+let labelFading = false;
 
 function loadSettings() {
   if (embedded) return { ...defaults };
@@ -46,6 +52,15 @@ function render() {
   const actual = periodAt(now, shown.dayStart, shown.nightStart);
   const period = draft ? editing : actual;
   const color = shown[`${period}Color`];
+  // The real change from day to night (or back) is a slow sunset or sunrise; anything else,
+  // like editing a color, moves at the usual quick pace.
+  const turning = !draft && lastPeriod !== null && lastPeriod !== period;
+  lastPeriod = draft ? lastPeriod : period;
+  if (turning) {
+    document.documentElement.style.setProperty("--fade", `${periodFade}ms`);
+    clearTimeout(fadeTimer);
+    fadeTimer = setTimeout(() => document.documentElement.style.removeProperty("--fade"), periodFade + 200);
+  }
   document.body.style.backgroundColor = color;
   document.body.dataset.ink = isLight(color) ? "dark" : "light";
   $('meta[name="theme-color"]').content = color;
@@ -54,9 +69,7 @@ function render() {
   clock.hidden = !shown.showTime;
   clock.dateTime = now.toISOString();
   clock.textContent = timeFormat.format(now);
-  const label = $("#label");
-  label.textContent = shown[`${period}Label`];
-  label.hidden = !label.textContent;
+  showLabel(shown[`${period}Label`], turning);
 
   const status = $("#status");
   status.hidden = !shown.showStatus;
@@ -70,6 +83,27 @@ function render() {
   const dusk = actual === "day" && nextChange(now, "day", shown.dayStart, shown.nightStart) - now <= windDown;
   const realColor = shown[`${actual}Color`];
   updatePet(shown, { dayColor: shown.dayColor, nightColor: shown.nightColor, background: color, ink: isLight(realColor) ? "#111111" : "#f8fafc", period: actual === "night" ? "night" : dusk ? "dusk" : "day" });
+}
+
+/** Sets the label; when the period turns, the old words fade out and the new ones fade in. */
+function showLabel(text, turning) {
+  const label = $("#label");
+  if (turning && label.textContent !== text) {
+    labelFading = true;
+    label.style.transitionDuration = `${periodFade / 2}ms`;
+    label.style.opacity = "0";
+    clearTimeout(labelTimer);
+    labelTimer = setTimeout(() => {
+      label.textContent = text;
+      label.hidden = !text;
+      label.style.opacity = "1";
+      labelTimer = setTimeout(() => { labelFading = false; label.style.transitionDuration = ""; }, periodFade / 2);
+    }, periodFade / 2);
+    return;
+  }
+  if (labelFading) return;
+  label.textContent = text;
+  label.hidden = !text;
 }
 
 /** Starts, updates or removes the gecko; its code only loads once it's switched on. */

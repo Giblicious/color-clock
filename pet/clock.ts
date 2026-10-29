@@ -38,6 +38,8 @@ const HUES = [42, 120, 185, 215, 265, 320];
 const MIN_HUE_GAP = 60;
 /** How bright the gecko is at night: dark enough not to catch the eye. */
 const NIGHT_DIM = 0.38;
+/** The change from day to night (and back) takes this long, matching the display's fade (ms). */
+const PERIOD_FADE = 15_000;
 /**
  * Bugs turn up by themselves during the day, about this often (seconds, at random between
  * the two), so it stays fed: a starving gecko is frantic in everything it does.
@@ -165,14 +167,29 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     return { x: (0.2 + Math.random() * 0.6) * win.innerWidth / px, y: (0.25 + Math.random() * 0.5) * win.innerHeight / px };
   }
 
+  /** Eases the gecko's colors toward `to` over `ms`, in step with the display's fade. */
+  let dim = opts.dim ?? 1;
+  let dimTimer = 0;
+  function fadeDim(to: number, ms: number) {
+    win.clearInterval(dimTimer);
+    if (ms <= 0) { dim = to; engine.setOptions({ dim }); return; }
+    const from = dim, start = performance.now();
+    dimTimer = win.setInterval(() => {
+      const t = Math.min(1, (performance.now() - start) / ms);
+      dim = from + (to - from) * (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
+      engine.setOptions({ dim });
+      if (t >= 1) win.clearInterval(dimTimer);
+    }, 120);
+  }
+
   function setPeriod(period: Period, initial = false) {
-    engine.setOptions({ dim: period === 'night' ? NIGHT_DIM : 1 });
+    fadeDim(period === 'night' ? NIGHT_DIM : 1, initial ? 0 : PERIOD_FADE);
     if (period === 'day') {
       engine.setOptions({ sleepAfterMs: Infinity, ignorePointer: false });
       if (!initial) {
-        // Good morning: up, a blink, and a few proud push-ups.
-        engine.command('wake');
-        later(2500, () => { if (scene.period === 'day') engine.command('pushups'); });
+        // Good morning: it wakes as the sunrise finishes, then a few proud push-ups.
+        later(PERIOD_FADE * 0.6, () => { if (scene.period === 'day') engine.command('wake'); });
+        later(PERIOD_FADE * 0.6 + 2500, () => { if (scene.period === 'day') engine.command('pushups'); });
       }
     } else {
       // Play's over for the day.
@@ -199,6 +216,7 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
     },
     destroy() {
       for (const id of timers) win.clearTimeout(id);
+      win.clearInterval(dimTimer);
       win.clearTimeout(ballPop);
       win.removeEventListener('pointerdown', onDown);
       win.removeEventListener('pointerup', onUp);
