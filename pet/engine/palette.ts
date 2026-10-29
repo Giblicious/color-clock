@@ -50,6 +50,19 @@ const hsl = (h: number, s: number, l: number) =>
 
 const luminance = ([r, g, b]: Rgb) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 
+/**
+ * The shadow, scaled smoothly by how light the ground is (rather than one setting for light
+ * themes and another for dark): the darker the ground, the stronger it needs to be to show,
+ * and the more it tends from a warm brown toward black.
+ */
+function shadowFor(bg: Rgb) {
+  const l = luminance(bg);
+  const alpha = clamp(0.16 + (0.6 - l) * 0.4, 0.14, 0.4);
+  const t = clamp((0.6 - l) / 0.6, 0, 1);
+  const [r, g, b] = [40, 30, 10].map((c) => Math.round(c * (1 - t)));
+  return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+}
+
 
 /**
  * Build the gecko palette from a seed colour. Values are kept inside a band that
@@ -74,7 +87,7 @@ export function buildPalette(doc: Document, seedExpr: string, dim = 1): Palette 
     eye: hsl(h - 25, 0.35, 0.1),
     glint: 'hsl(0 0% 96%)',
     tongue: 'hsl(350 70% 66%)',
-    shadow: dark ? 'rgba(0,0,0,0.42)' : 'rgba(40,30,10,0.16)',
+    shadow: shadowFor(bg),
     ink: `rgb(${ink.join(',')})`,
     wing: dark ? 'rgba(220,230,240,0.55)' : 'rgba(150,170,190,0.55)',
     cricket: dark ? 'hsl(34 42% 58%)' : 'hsl(34 38% 38%)',
