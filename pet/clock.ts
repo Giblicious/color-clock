@@ -194,6 +194,8 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
       // Play's over for the day.
       win.clearTimeout(ballPop);
       ball.pop();
+      // The bugs go too, so it isn't still out hunting them after dark.
+      engine.shooBugs();
       // "Away" to the pet means: go home to bed and stay asleep. It's sent all the way
       // there (or to nap on the reminder pill), not just to wherever counts as near home.
       engine.setOptions({ sleepAfterMs: 0, ignorePointer: period === 'night' });

@@ -324,6 +324,9 @@ export class PetEngine {
     if (bug) bug.pace = paceFactor(this.opts.critters?.[kind]?.pace ?? 'normal');
   }
 
+  /** All the bugs about leave, flying or hopping off out of the window. */
+  shooBugs() { this.swarm.shoo(); }
+
   /** You ticked off the last open task in a note. */
   cheer() { this.brain?.cheer(); }
 

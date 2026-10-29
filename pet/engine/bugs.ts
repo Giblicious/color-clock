@@ -84,19 +84,25 @@ export class Bug {
   /** Has flown into the window; from then on it stays inside until it leaves for good. */
   private inside = false;
 
+  /** Off out of the window for good, by the nearer side. */
+  leave(b = this.bounds) {
+    if (!this.alive || this.leaving) return;
+    // Not yet in the window at all: simply gone.
+    if (!b) { this.alive = false; return; }
+    this.leaving = true;
+    this.state = 'leaving';
+    const cx = this.x < b.w / 2 ? -30 : b.w + 30;
+    this.aim = { x: cx, y: this.y + rand(-60, 60) };
+    if (this.kind === 'cricket') this.beginHop(Math.atan2(this.aim.y - this.y, this.aim.x - this.x), 26);
+  }
+
   update(dt: number, world: World) {
     this.age += dt;
     // Crickets freeze when something is stalking them close by.
     this.timer -= this.kind === 'cricket' && this.threat < 45 && this.state === 'resting' ? dt * 0.25 : dt;
     const b = world.bounds;
     this.bounds = b;
-    if (this.age > this.life && !this.leaving) {
-      this.leaving = true;
-      this.state = 'leaving';
-      const cx = this.x < b.w / 2 ? -30 : b.w + 30;
-      this.aim = { x: cx, y: this.y + rand(-60, 60) };
-      if (this.kind === 'cricket') this.beginHop(Math.atan2(this.aim.y - this.y, this.aim.x - this.x), 26);
-    }
+    if (this.age > this.life && !this.leaving) this.leave(b);
 
     if (this.kind === 'fly') this.updateFly(dt, world);
     else this.updateCricket(dt, world);
@@ -254,6 +260,9 @@ export class Swarm {
     }
     this.bugs = this.bugs.filter((b) => b.alive);
   }
+
+  /** Every bug heads off out of the window (any still being hunted is let go). */
+  shoo() { for (const b of this.bugs) b.leave(); }
 
   draw(ctx: CanvasRenderingContext2D, pal: Palette, frame: number, k = 1) {
     for (const b of this.bugs) b.draw(ctx, pal, frame, k);
