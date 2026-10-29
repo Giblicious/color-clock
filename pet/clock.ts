@@ -89,13 +89,6 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
   applyColors(doc, scene);
   const engine = new PetEngine(win, opts);
   engine.start();
-  try {
-    setPeriod(scene.period, true);
-  } catch (error) {
-    // Never leave a half-started gecko behind.
-    engine.destroy();
-    throw error;
-  }
 
   const timers = new Set<number>();
   const later = (ms: number, fn: () => void) => {
@@ -206,6 +199,15 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
       engine.setOptions({ sleepAfterMs: 0, ignorePointer: period === 'night' });
       if (!engine.asleep) engine.command('sleep');
     }
+  }
+
+  // Only once everything above exists (setPeriod touches the timers and the ball).
+  try {
+    setPeriod(scene.period, true);
+  } catch (error) {
+    // Never leave a half-started gecko behind.
+    engine.destroy();
+    throw error;
   }
 
   return {

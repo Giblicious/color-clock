@@ -323,6 +323,8 @@ export class World {
     if (!roots.length && !solids.length) { this.glyphInk = null; return []; }
     const doc = this.win.document, p = this.px;
     const w = Math.ceil(this.win.innerWidth / p), h = Math.ceil(this.win.innerHeight / p);
+    // Not laid out yet (a WebView can start at 0×0): no glyphs until the next rebuild.
+    if (w < 1 || h < 1) { this.glyphInk = null; return []; }
     const canvas = (this.glyphCanvas ??= doc.createElement('canvas'));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     const ctx = canvas.getContext('2d', { willReadFrequently: true });

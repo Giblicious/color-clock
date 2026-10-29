@@ -117,6 +117,8 @@ function updatePet(shown, scene) {
   }
   if (pet) { pet.update(scene); return; }
   if (petLoading || petFailed) return;
+  // A WebView can run before it's laid out; the gecko sizes itself to the screen, so wait.
+  if (!window.innerWidth || !window.innerHeight) return;
   petLoading = true;
   import("/pet.js")
     .then(({ startClockPet }) => { if ((draft || settings).pet && !pet) pet = startClockPet(window, scene); })
