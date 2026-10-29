@@ -84,10 +84,18 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
   };
 
   let scene = first;
+  let dim = opts.dim ?? 1;
+  let dimTimer = 0;
   applyColors(doc, scene);
   const engine = new PetEngine(win, opts);
   engine.start();
-  setPeriod(scene.period, true);
+  try {
+    setPeriod(scene.period, true);
+  } catch (error) {
+    // Never leave a half-started gecko behind.
+    engine.destroy();
+    throw error;
+  }
 
   const timers = new Set<number>();
   const later = (ms: number, fn: () => void) => {
@@ -168,8 +176,6 @@ export function startClockPet(win: Window, first: Scene): ClockPet {
   }
 
   /** Eases the gecko's colors toward `to` over `ms`, in step with the display's fade. */
-  let dim = opts.dim ?? 1;
-  let dimTimer = 0;
   function fadeDim(to: number, ms: number) {
     win.clearInterval(dimTimer);
     if (ms <= 0) { dim = to; engine.setOptions({ dim }); return; }

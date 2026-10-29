@@ -22,6 +22,8 @@ let overlayTimer;
 let toastTimer;
 let pet = null;
 let petLoading = false;
+/** The pet failed to start: don't keep trying (each try could leave something behind). */
+let petFailed = false;
 let lastPeriod = null;
 let fadeTimer;
 let labelTimer;
@@ -114,11 +116,11 @@ function updatePet(shown, scene) {
     return;
   }
   if (pet) { pet.update(scene); return; }
-  if (petLoading) return;
+  if (petLoading || petFailed) return;
   petLoading = true;
   import("/pet.js")
     .then(({ startClockPet }) => { if ((draft || settings).pet && !pet) pet = startClockPet(window, scene); })
-    .catch((error) => console.error("Couldn't load the pet", error))
+    .catch((error) => { petFailed = true; console.error("Couldn't start the pet", error); })
     .finally(() => { petLoading = false; });
 }
 
