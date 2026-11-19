@@ -36,8 +36,14 @@
                 android:gravity="center">
 
                 <TextView
+                    android:id="@+id/tab_nap"
+                    style="@style/Settings.Tab"
+                    android:text="Nap" />
+
+                <TextView
                     android:id="@+id/tab_schedule"
                     style="@style/Settings.Tab"
+                    android:layout_marginStart="4dp"
                     android:text="Schedule" />
 
                 <TextView
@@ -76,8 +82,13 @@
             android:paddingBottom="16dp">
 
             <include
+                android:id="@+id/page_nap"
+                layout="@layout/page_nap" />
+
+            <include
                 android:id="@+id/page_schedule"
-                layout="@layout/page_schedule" />
+                layout="@layout/page_schedule"
+                android:visibility="gone" />
 
             <include
                 android:id="@+id/page_display"

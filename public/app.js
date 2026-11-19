@@ -4,6 +4,13 @@ const defaults = { dayStart: "07:00", nightStart: "19:00", dayColor: "#16a34a", 
 const palette = ["#16a34a", "#22c55e", "#0ea5e9", "#2563eb", "#7c3aed", "#db2777", "#dc2626", "#ea580c", "#f59e0b", "#facc15", "#ffffff", "#64748b", "#1e293b", "#000000"];
 const drift = [[0, 0], [6, -4], [-5, 5], [4, 7], [-7, -3], [3, -7], [-3, 4], [7, 2]];
 const storageKey = "color-clock-settings-v1";
+const napKey = "color-clock-nap-v1";
+/** Shown in place of the night label during a nap; matches the Android app's. */
+const napLabel = "Nap time";
+/** Nap lengths step by half hours, from half an hour to six hours (minutes). */
+const napStep = 30, napMin = 30, napMax = 360;
+/** A wake-up time further off than this is more likely a slip than a nap (ms). */
+const napLongest = 12 * 3_600_000;
 /** The gecko gets sleepy and heads to bed this long before night (ms). */
 const windDown = 10 * 60_000;
 /** How long the change from day to night (and back) takes (ms). Settings edits stay quick. */
@@ -14,6 +21,13 @@ const $ = (selector) => document.querySelector(selector);
 const sheet = $("#settings");
 const overlay = $("#overlay");
 let settings = loadSettings();
+/** A nap is night until this moment (epoch ms); in the past, or 0, when there is none. */
+let napUntil = 0;
+let napMinutes = 90;
+if (!embedded) {
+  try { ({ until: napUntil = 0, minutes: napMinutes = 90 } = JSON.parse(localStorage.getItem(napKey) || "{}")); }
+  catch { /* no nap */ }
+}
 let draft = null;
 let editing = "day";
 let wakeLock = null;
@@ -51,7 +65,9 @@ function isLight(hex) {
 function render() {
   const now = new Date();
   const shown = draft || settings;
-  const actual = periodAt(now, shown.dayStart, shown.nightStart);
+  // A nap is night until it ends, whatever the schedule says.
+  const napping = napUntil > now.getTime();
+  const actual = napping ? "night" : periodAt(now, shown.dayStart, shown.nightStart);
   const period = draft ? editing : actual;
   const color = shown[`${period}Color`];
   // The real change from day to night (or back) is a slow sunset or sunrise; anything else,
@@ -71,19 +87,21 @@ function render() {
   clock.hidden = !shown.showTime;
   clock.dateTime = now.toISOString();
   clock.textContent = timeFormat.format(now);
-  showLabel(shown[`${period}Label`], turning);
+  showLabel(napping && !draft ? napLabel : shown[`${period}Label`], turning);
 
   const status = $("#status");
   status.hidden = !shown.showStatus;
-  status.textContent = `${period === "day" ? "Day" : "Night"} · changes ${new Intl.DateTimeFormat([], { weekday: "short", hour: "numeric", minute: "2-digit" }).format(nextChange(now, actual, shown.dayStart, shown.nightStart))}`;
+  status.textContent = napping ? `Nap · ends ${timeFormat.format(napUntil)}`
+    : `${period === "day" ? "Day" : "Night"} · changes ${new Intl.DateTimeFormat([], { weekday: "short", hour: "numeric", minute: "2-digit" }).format(nextChange(now, actual, shown.dayStart, shown.nightStart))}`;
 
   const [x, y] = drift[now.getMinutes() % drift.length];
   document.documentElement.style.setProperty("--drift-x", `${x}px`);
   document.documentElement.style.setProperty("--drift-y", `${y}px`);
 
   // The pet keeps the real time of day, even while a different period is being previewed.
-  const dusk = actual === "day" && nextChange(now, "day", shown.dayStart, shown.nightStart) - now <= windDown;
+  const dusk = !napping && actual === "day" && nextChange(now, "day", shown.dayStart, shown.nightStart) - now <= windDown;
   const realColor = shown[`${actual}Color`];
+  if (!sheet.hidden) refreshNap(now);
   updatePet(shown, { dayColor: shown.dayColor, nightColor: shown.nightColor, background: color, ink: isLight(realColor) ? "#111111" : "#f8fafc", period: actual === "night" ? "night" : dusk ? "dusk" : "day" });
 }
 
@@ -141,6 +159,61 @@ function toast(text) {
   toastTimer = setTimeout(() => { element.hidden = true; }, 2_600);
 }
 
+// --- nap ---
+
+/** 90 → "1 h 30 min". */
+function napLength(minutes) {
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  if (!hours) return `${rest} min`;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
+/** The next time the clock reads the chosen wake-up time (later today, or tomorrow). */
+function wakeTarget(now) {
+  const [hour, minute] = $("#nap-wake").value.split(":").map(Number);
+  const wake = new Date(now);
+  wake.setHours(hour, minute, 0, 0);
+  if (wake <= now) wake.setDate(wake.getDate() + 1);
+  return wake.getTime();
+}
+
+function refreshNap(now = new Date()) {
+  const napping = napUntil > now.getTime();
+  $("#nap-setup").hidden = napping;
+  $("#nap-active").hidden = !napping;
+  if (napping) {
+    $("#nap-until").textContent = timeFormat.format(napUntil);
+    $("#nap-left").textContent = `${napLength(Math.ceil((napUntil - now) / 60_000))} to go, then a sunrise`;
+    return;
+  }
+  $("#nap-length").textContent = napLength(napMinutes);
+  $("#nap-length-wake").textContent = `Wakes at ${timeFormat.format(now.getTime() + napMinutes * 60_000)}`;
+  $("#nap-less").disabled = napMinutes <= napMin;
+  $("#nap-more").disabled = napMinutes >= napMax;
+  if (!$("#nap-wake").value) return;
+  const ahead = wakeTarget(now) - now;
+  $("#nap-wake-length").textContent = ahead > napLongest ? "That's more than 12 hours away" : `Starts now · ${napLength(Math.ceil(ahead / 60_000))}`;
+}
+
+function setNap(until) {
+  napUntil = until;
+  try { localStorage.setItem(napKey, JSON.stringify({ until: napUntil, minutes: napMinutes })); } catch { /* lasts until reload */ }
+}
+
+function startNap(until) {
+  setNap(until);
+  closeSheet();
+  toast(`Nap until ${timeFormat.format(until)}`);
+}
+
+function changeNap(minutes) {
+  const until = napUntil + minutes * 60_000;
+  if (until <= Date.now() + 60_000) { toast("To stop sooner than that, end the nap"); return; }
+  setNap(until);
+  refreshNap();
+  render();
+}
+
 // --- settings sheet ---
 
 function openSheet() {
@@ -154,6 +227,11 @@ function openSheet() {
   $("#show-status").checked = draft.showStatus;
   $("#show-pet").checked = draft.pet;
   selectPeriod(editing);
+  // The wake-up time starts one usual nap from now, on a five-minute mark.
+  const wake = new Date(Date.now() + (napMinutes + 4) * 60_000);
+  wake.setMinutes(Math.floor(wake.getMinutes() / 5) * 5);
+  $("#nap-wake").value = `${String(wake.getHours()).padStart(2, "0")}:${String(wake.getMinutes()).padStart(2, "0")}`;
+  refreshNap();
   $("#save-settings").focus();
 }
 
@@ -231,6 +309,19 @@ $("#label-input").addEventListener("input", (event) => updateDraft("Label", even
 $("#show-time").addEventListener("change", (event) => { draft.showTime = event.target.checked; render(); });
 $("#show-status").addEventListener("change", (event) => { draft.showStatus = event.target.checked; render(); });
 $("#show-pet").addEventListener("change", (event) => { draft.pet = event.target.checked; render(); });
+$("#nap-less").addEventListener("click", () => { napMinutes = Math.max(napMin, napMinutes - napStep); refreshNap(); });
+$("#nap-more").addEventListener("click", () => { napMinutes = Math.min(napMax, napMinutes + napStep); refreshNap(); });
+$("#nap-wake").addEventListener("input", () => refreshNap());
+$("#nap-start-length").addEventListener("click", () => startNap(Date.now() + napMinutes * 60_000));
+$("#nap-start-wake").addEventListener("click", () => {
+  if (!$("#nap-wake").value) return;
+  const until = wakeTarget(new Date());
+  if (until - Date.now() > napLongest) { toast("Pick a wake-up time in the next 12 hours"); return; }
+  startNap(until);
+});
+$("#nap-shorter").addEventListener("click", () => changeNap(-napStep));
+$("#nap-longer").addEventListener("click", () => changeNap(napStep));
+$("#nap-end").addEventListener("click", () => { setNap(0); closeSheet(); });
 $("#open-settings").addEventListener("click", openSheet);
 $("#cancel-settings").addEventListener("click", closeSheet);
 $("#scrim").addEventListener("click", closeSheet);
@@ -265,7 +356,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 if (embedded) {
   document.body.classList.add("embedded");
   // The app calls this with its settings whenever they change.
-  window.colorClock = { apply(next) { settings = { ...defaults, ...next }; render(); } };
+  window.colorClock = { apply(next) { settings = { ...defaults, ...next }; napUntil = Number(next.napUntil) || 0; render(); } };
 }
 render();
 setInterval(render, 1_000);

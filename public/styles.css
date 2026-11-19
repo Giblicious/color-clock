@@ -106,6 +106,16 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .hint { margin: 10px 4px; color: var(--muted); font-size: .78rem; }
 
 .card { display: grid; gap: 18px; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+.card[hidden] { display: none; }
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper button { width: 40px; height: 40px; padding: 0; color: var(--text); background: var(--line); border: 0; border-radius: 50%; font-size: 1.3rem; line-height: 1; }
+.stepper button:disabled { opacity: .35; cursor: default; }
+.stepper output { min-width: 7.5ch; font-weight: 600; font-variant-numeric: tabular-nums; text-align: center; }
+.nap-note { color: var(--muted); font-size: .85rem; }
+.nap-until { display: grid; justify-items: center; gap: 2px; }
+.nap-until strong { font-size: 2.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nap-buttons { grid-template-columns: 1fr 1fr; }
+.nap-buttons .danger { grid-column: 1 / -1; color: var(--danger, #f87171); background: transparent; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .field { display: grid; gap: 8px; }
 .row-text { display: flex; justify-content: space-between; }

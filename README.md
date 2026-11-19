@@ -38,6 +38,7 @@ Color Clock comes in two forms:
 **The display**
 - A day and a night color, each with its own start time, screen brightness, and optional label ("OK to wake" / "Stay in bed").
 - Optional large clock and a small "next change" reminder.
+- **Nap mode:** night for a set time during the day, then a sunrise, just like the morning.
 - A slow 15-second fade at sunrise and sunset: color, text, label, brightness and the gecko all change together.
 - The text color adapts so it stays readable on any background. Everything shifts a few pixels each minute to prevent burn-in.
 
@@ -47,10 +48,10 @@ Color Clock comes in two forms:
 - **Petting:** hold a finger on the gecko.
 - **Ten minutes before night** it gets sleepy and heads to bed.
 - **At night** it sleeps in darker colors that won't catch the eye, and ignores touches.
-- **In the morning** it wakes as the color changes and does a few push-ups.
+- **In the morning**, or when a nap ends, it wakes as the color changes and does a few push-ups.
 
 **Built for a kid's room**
-- **Child lock.** Taps do nothing and the power menu is hidden. Settings open only with a hold in the corner plus a code written out in words (details [below](#child-lock)).
+- **Child lock.** Taps do nothing and the power menu is hidden. Settings open only with a hold in the corner plus a code shown on screen (details [below](#child-lock)).
 - **Kiosk mode.** It becomes the home screen, hides the status and navigation bars, skips the lock screen, and keeps the screen on while plugged in. Bars that get pulled down hide again by themselves.
 - **Hands-off updates.** It checks this repo's releases every 6 hours and installs new versions silently.
 
@@ -88,10 +89,11 @@ Unplug it, set it on the nightstand, and plug it into a charger.
 
 ### Settings
 
-Tap the screen, then the gear. The settings fill the screen in four tabs, laid out to fit a landscape phone with nothing to scroll:
+Tap the screen, then the gear. The settings fill the screen in five tabs, laid out to fit a landscape phone with nothing to scroll:
 
 | Tab | What's there |
 |---|---|
+| **Nap** | Start a nap, or change or end the one that's running |
 | **Schedule** | Start time, color, label and brightness for day and night |
 | **Display** | Clock, reminder and gecko on/off |
 | **Child lock** | Turn the lock on or off |
@@ -99,18 +101,27 @@ Tap the screen, then the gear. The settings fill the screen in four tabs, laid o
 
 Dragging a brightness slider previews it on the screen. Settings close without saving after two minutes untouched.
 
+### Nap mode
+
+Open settings. The **Nap** tab comes first. Start a nap one of two ways:
+
+- **Nap for** a length of time. Use **−** and **+** to change it by half an hour (30 minutes to 6 hours). It remembers the last length.
+- **Wake up at** a time you pick. The nap starts now and ends then.
+
+The screen fades to the night color with the label "Nap time", and the gecko goes to sleep. The reminder reads "Nap · ends 2:30 PM". When the time comes, there's a normal sunrise. During a nap the **Nap** tab shows when it ends, with **− 30 min**, **+ 30 min** and **End nap now**. A nap keeps going through a restart or an update.
+
 ### Child lock
 
 With the child lock on:
 
 1. Hold the **top-right corner** for 3 seconds. A ring fills up while you hold.
-2. Type the code shown **in words**, for example *"Five Two Eight Zero"* → `5280`.
+2. Type the 4-digit code shown on screen.
 
-The code is new every time, so there's nothing to remember. A child who can't read yet can't get in. The code screen goes back to the clock after three wrong codes, or after ten seconds untouched.
+The code is new every time, so there's nothing to remember. The code screen goes back to the clock after three wrong codes, or after ten seconds untouched.
 
 ## Web version
 
-The same display runs in any modern browser, gecko included. Move the pointer or tap to show the gear; settings are saved in that browser.
+The same display runs in any modern browser, gecko and nap mode included. Move the pointer or tap to show the gear; settings are saved in that browser.
 
 ```sh
 npm run dev                                   # http://127.0.0.1:8088

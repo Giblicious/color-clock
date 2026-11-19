@@ -33,6 +33,8 @@ public class MainActivity extends Activity {
     private static final long UPDATE_INTERVAL_MS = 6 * DateUtils.HOUR_IN_MILLIS;
     /** How long the change from day to night (and back) takes; matches the web display's. */
     private static final long PERIOD_FADE_MS = 15_000;
+    /** Shown in place of the night label during a nap; matches the web display's. */
+    private static final String NAP_LABEL = "Nap time";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
@@ -171,14 +173,19 @@ public class MainActivity extends Activity {
 
     private void render() {
         Calendar now = Calendar.getInstance();
-        boolean day = settings.isDay(now);
+        // A nap is night until it ends, whatever the schedule says.
+        long napUntil = prefs.napUntil();
+        boolean napping = napUntil > now.getTimeInMillis();
+        boolean day = !napping && settings.isDay(now);
         String clock = settings.showTime ? DateFormat.getTimeFormat(this).format(now.getTime()) : null;
         String status = null;
-        if (settings.showStatus) {
+        if (settings.showStatus && napping) {
+            status = "Nap · ends " + DateFormat.getTimeFormat(this).format(napUntil);
+        } else if (settings.showStatus) {
             String pattern = DateFormat.getBestDateTimePattern(Locale.getDefault(), DateFormat.is24HourFormat(this) ? "EEEHHmm" : "EEEhmma");
             status = (day ? "Day" : "Night") + " · changes " + DateFormat.format(pattern, settings.nextChange(now, day));
         }
-        String label = day ? settings.dayLabel : settings.nightLabel;
+        String label = napping ? NAP_LABEL : day ? settings.dayLabel : settings.nightLabel;
         // The real change from day to night (or back) is a slow fade; settings edits are quick.
         boolean turning = lastDay != null && lastDay != day;
         lastDay = day;
@@ -218,7 +225,7 @@ public class MainActivity extends Activity {
 
     /**
      * Normal mode: a tap reveals the gear. Child lock: taps do nothing (a few quick taps show a
-     * hint), and only a 3-second hold on the top-right corner, then a code spelled out in words,
+     * hint), and only a 3-second hold on the top-right corner, then a code shown on screen,
      * opens settings.
      */
     private boolean onScreenTouch(MotionEvent event) {
@@ -272,11 +279,11 @@ public class MainActivity extends Activity {
      */
     private void syncPetView(FrameLayout root) {
         if (settings.pet && petView == null) {
-            petView = new PetView(this, settings);
+            petView = new PetView(this, settings, prefs.napUntil());
             petView.setOnTouchListener((v, event) -> { onScreenTouch(event); return false; });
             root.addView(petView, 1, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         } else if (settings.pet) {
-            petView.apply(settings);
+            petView.apply(settings, prefs.napUntil());
         } else if (petView != null) {
             root.removeView(petView);
             petView.destroy();
@@ -425,6 +432,26 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean childLock() { return prefs.childLock(); }
+
+        @Override
+        public long napUntil() { return prefs.napUntil(); }
+
+        @Override
+        public int napMinutes() { return prefs.napMinutes(); }
+
+        @Override
+        public void startNap(long until, int minutes) {
+            prefs.setNapMinutes(minutes);
+            setNapUntil(until);
+            Toast.makeText(MainActivity.this, "Nap until " + DateFormat.getTimeFormat(MainActivity.this).format(until), Toast.LENGTH_SHORT).show();
+        }
+
+        @Override
+        public void setNapUntil(long until) {
+            prefs.setNapUntil(until);
+            syncPetView((FrameLayout) screen.getParent());
+            render();
+        }
 
         @Override
         public String deviceFacts() {

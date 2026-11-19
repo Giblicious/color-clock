@@ -123,7 +123,7 @@
             style="@style/Settings.Body"
             android:layout_width="match_parent"
             android:layout_marginTop="6dp"
-            android:text="A new code every time, written out in words. Grown-ups read it and type the numbers. Nothing to remember." />
+            android:text="A new code every time, shown on screen. Type the numbers you see. Nothing to remember." />
 
         <View
             android:layout_width="match_parent"
@@ -138,21 +138,22 @@
             android:padding="16dp">
 
             <TextView
-                android:id="@+id/sample_words"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/text"
-                android:textSize="20sp" />
+                android:text="For example"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="2dp"
+                android:fontFamily="sans-serif-medium"
                 android:fontFeatureSettings="tnum"
-                android:text="You type 5 2 8 0"
-                android:textColor="@color/text_muted"
-                android:textSize="15sp" />
+                android:letterSpacing="0.3"
+                android:text="5280"
+                android:textColor="@color/text"
+                android:textSize="26sp" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

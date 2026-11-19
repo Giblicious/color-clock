@@ -12,6 +12,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import java.io.IOException;
 import java.io.InputStream;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * Shows the web version of the display, with the gecko living on it, over the native screen.
@@ -27,9 +29,9 @@ final class PetView extends WebView {
     private boolean loaded;
 
     @SuppressLint("SetJavaScriptEnabled")
-    PetView(Context context, Settings settings) {
+    PetView(Context context, Settings settings, long napUntil) {
         super(context);
-        pendingSettings = settings.toJson();
+        pendingSettings = withNap(settings, napUntil);
         setBackgroundColor(Color.parseColor(settings.dayColor));
         setVerticalScrollBarEnabled(false);
         setHorizontalScrollBarEnabled(false);
@@ -75,10 +77,18 @@ final class PetView extends WebView {
         loadUrl(PAGE);
     }
 
-    /** Hands the display its settings; called on every change. */
-    void apply(Settings settings) {
-        pendingSettings = settings.toJson();
+    /** Hands the display its settings and any running nap; called on every change. */
+    void apply(Settings settings, long napUntil) {
+        pendingSettings = withNap(settings, napUntil);
         if (loaded) push();
+    }
+
+    private static String withNap(Settings settings, long napUntil) {
+        try {
+            return new JSONObject(settings.toJson()).put("napUntil", napUntil).toString();
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private void push() {

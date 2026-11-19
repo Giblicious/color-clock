@@ -18,9 +18,9 @@ import android.widget.TextView;
 import java.security.SecureRandom;
 
 /**
- * The child-lock gate: a fresh 4-digit code spelled out in words ("Five Two Eight Zero") that a
- * grown-up types on the keypad. Nothing to remember, but a child who can't read can't pass it.
- * Laid out for landscape: code on the left, keypad on the right.
+ * The child-lock gate: a fresh 4-digit code shown on screen that a grown-up types on the keypad.
+ * Nothing to remember, and a new code every time. Laid out for landscape: code on the left,
+ * keypad on the right.
  *
  * A child who stumbles in here is sent back to the clock: after three wrong codes, or ten
  * seconds without a key pressed.
@@ -31,7 +31,6 @@ final class UnlockChallenge extends FrameLayout {
         void onCancel();
     }
 
-    static final String[] WORDS = {"Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"};
     private static final int LENGTH = 4;
     private static final int MAX_ATTEMPTS = 3;
     private static final long IDLE_MS = 10_000;
@@ -40,7 +39,7 @@ final class UnlockChallenge extends FrameLayout {
     private final SecureRandom random = new SecureRandom();
     private final Listener listener;
     private final float density;
-    private final TextView words;
+    private final TextView shown;
     private final TextView error;
     private final View[] dots = new View[LENGTH];
     private final StringBuilder entry = new StringBuilder();
@@ -71,9 +70,11 @@ final class UnlockChallenge extends FrameLayout {
 
         prompt.addView(text(context, "Type this code", 16, R.color.text_muted), margins(0, 10));
 
-        words = text(context, "", 30, R.color.text);
-        words.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
-        prompt.addView(words, margins(0, 6));
+        shown = text(context, "", 40, R.color.text);
+        shown.setTypeface(android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL));
+        shown.setFontFeatureSettings("tnum");
+        shown.setLetterSpacing(0.3f);
+        prompt.addView(shown, margins(0, 6));
 
         LinearLayout dotRow = new LinearLayout(context);
         for (int i = 0; i < LENGTH; i++) {
@@ -106,21 +107,11 @@ final class UnlockChallenge extends FrameLayout {
         handler.postDelayed(giveUp, IDLE_MS);
     }
 
-    /** "5280" → "Five Two Eight Zero". */
-    static String spell(String digits) {
-        StringBuilder out = new StringBuilder();
-        for (char c : digits.toCharArray()) {
-            if (out.length() > 0) out.append(' ');
-            out.append(WORDS[c - '0']);
-        }
-        return out.toString();
-    }
-
     private void newCode() {
         StringBuilder next = new StringBuilder();
         for (int i = 0; i < LENGTH; i++) next.append(random.nextInt(10));
         code = next.toString();
-        words.setText(spell(code));
+        shown.setText(code);
         entry.setLength(0);
         updateDots();
     }

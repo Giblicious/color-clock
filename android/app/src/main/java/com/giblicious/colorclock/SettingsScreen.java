@@ -47,7 +47,20 @@ final class SettingsScreen {
         String deviceFacts();
         String updateInfo();
         boolean childLock();
+        /** When the running nap ends (epoch ms), or 0 with none. */
+        long napUntil();
+        /** The nap length chosen last time, in minutes. */
+        int napMinutes();
+        /** Starts a nap now; {@code minutes} is remembered as the next default length. */
+        void startNap(long until, int minutes);
+        /** Moves the end of the running nap; 0 ends it now. */
+        void setNapUntil(long until);
     }
+
+    /** Nap lengths step by half hours, from half an hour to six hours (minutes). */
+    private static final int NAP_STEP = 30, NAP_MIN = 30, NAP_MAX = 360;
+    /** A wake-up time further off than this is more likely a slip than a nap (ms). */
+    private static final long NAP_LONGEST = 12 * 3_600_000L;
 
     private final Activity activity;
     private final FrameLayout root;
@@ -56,6 +69,9 @@ final class SettingsScreen {
     private View view;
     private Settings draft;
     private boolean childLock;
+    private int napMinutes;
+    /** The chosen wake-up time, in minutes after midnight. */
+    private int wakeMinutes;
     /** Left open and untouched this long, settings close without saving (ms). */
     private static final long IDLE_MS = 120_000;
     private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -84,12 +100,13 @@ final class SettingsScreen {
 
         view.findViewById(R.id.close).setOnClickListener(v -> close());
         view.findViewById(R.id.done).setOnClickListener(this::done);
-        int[] tabs = {R.id.tab_schedule, R.id.tab_display, R.id.tab_lock, R.id.tab_device};
+        int[] tabs = {R.id.tab_nap, R.id.tab_schedule, R.id.tab_display, R.id.tab_lock, R.id.tab_device};
         for (int i = 0; i < tabs.length; i++) {
             int index = i;
             view.findViewById(tabs[i]).setOnClickListener(v -> showTab(index));
         }
 
+        bindNap();
         bindPeriod(view.findViewById(R.id.editor_day), true);
         bindPeriod(view.findViewById(R.id.editor_night), false);
         bindDisplay();
@@ -118,6 +135,7 @@ final class SettingsScreen {
     /** Refreshes live status on the Device tab; called periodically while open. */
     void refreshStatus() {
         if (view == null) return;
+        refreshNap();
         ((TextView) view.findViewById(R.id.device_facts)).setText(host.deviceFacts());
         ((TextView) view.findViewById(R.id.update_info)).setText(host.updateInfo());
         Button kiosk = view.findViewById(R.id.kiosk);
@@ -142,8 +160,8 @@ final class SettingsScreen {
 
     private void showTab(int index) {
 
-        int[] tabs = {R.id.tab_schedule, R.id.tab_display, R.id.tab_lock, R.id.tab_device};
-        int[] pages = {R.id.page_schedule, R.id.page_display, R.id.page_lock, R.id.page_device};
+        int[] tabs = {R.id.tab_nap, R.id.tab_schedule, R.id.tab_display, R.id.tab_lock, R.id.tab_device};
+        int[] pages = {R.id.page_nap, R.id.page_schedule, R.id.page_display, R.id.page_lock, R.id.page_device};
         for (int i = 0; i < tabs.length; i++) {
             TextView label = view.findViewById(tabs[i]);
             label.setSelected(i == index);
@@ -151,8 +169,91 @@ final class SettingsScreen {
             view.findViewById(pages[i]).setVisibility(i == index ? View.VISIBLE : View.GONE);
         }
         hideKeyboard(view);
-        if (index == 1) refreshDisplay();
-        if (index == 3) refreshStatus();
+        if (index == 0) refreshNap();
+        if (index == 2) refreshDisplay();
+        if (index == 4) refreshStatus();
+    }
+
+    // --- Nap: night for a while, then a sunrise ---
+
+    private void bindNap() {
+        napMinutes = Math.max(NAP_MIN, Math.min(NAP_MAX, host.napMinutes()));
+        Calendar wake = Calendar.getInstance();
+        wake.add(Calendar.MINUTE, napMinutes + 4);
+        wakeMinutes = (wake.get(Calendar.HOUR_OF_DAY) * 60 + wake.get(Calendar.MINUTE)) / 5 * 5;
+
+        view.findViewById(R.id.nap_less).setOnClickListener(v -> { tap(v); napMinutes = Math.max(NAP_MIN, napMinutes - NAP_STEP); refreshNap(); });
+        view.findViewById(R.id.nap_more).setOnClickListener(v -> { tap(v); napMinutes = Math.min(NAP_MAX, napMinutes + NAP_STEP); refreshNap(); });
+        view.findViewById(R.id.nap_start_length).setOnClickListener(v -> startNap(System.currentTimeMillis() + napMinutes * 60_000L, napMinutes));
+        view.findViewById(R.id.nap_wake_time).setOnClickListener(v -> new TimePickerDialog(activity, R.style.Theme_ColorClock_Dialog, (picker, hour, minute) -> {
+            wakeMinutes = hour * 60 + minute;
+            refreshNap();
+        }, wakeMinutes / 60, wakeMinutes % 60, DateFormat.is24HourFormat(activity)).show());
+        view.findViewById(R.id.nap_start_wake).setOnClickListener(v -> {
+            long until = wakeTime();
+            if (until - System.currentTimeMillis() > NAP_LONGEST) { toast("Pick a wake-up time in the next 12 hours"); return; }
+            startNap(until, napMinutes);
+        });
+
+        view.findViewById(R.id.nap_shorter).setOnClickListener(v -> {
+            long until = host.napUntil() - NAP_STEP * 60_000L;
+            if (until <= System.currentTimeMillis() + 60_000) { toast("To stop sooner than that, end the nap"); return; }
+            tap(v);
+            host.setNapUntil(until);
+            refreshNap();
+        });
+        view.findViewById(R.id.nap_longer).setOnClickListener(v -> { tap(v); host.setNapUntil(host.napUntil() + NAP_STEP * 60_000L); refreshNap(); });
+        view.findViewById(R.id.nap_end).setOnClickListener(v -> {
+            v.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+            host.setNapUntil(0);
+            close();
+        });
+        refreshNap();
+    }
+
+    private void startNap(long until, int minutes) {
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+        close();
+        host.startNap(until, minutes);
+    }
+
+    /** The next time the clock reads the chosen wake-up time (later today, or tomorrow). */
+    private long wakeTime() {
+        Calendar wake = Calendar.getInstance();
+        wake.set(Calendar.HOUR_OF_DAY, wakeMinutes / 60);
+        wake.set(Calendar.MINUTE, wakeMinutes % 60);
+        wake.set(Calendar.SECOND, 0);
+        wake.set(Calendar.MILLISECOND, 0);
+        if (wake.getTimeInMillis() <= System.currentTimeMillis()) wake.add(Calendar.DAY_OF_MONTH, 1);
+        return wake.getTimeInMillis();
+    }
+
+    private void refreshNap() {
+        long now = System.currentTimeMillis();
+        long until = host.napUntil();
+        boolean napping = until > now;
+        view.findViewById(R.id.nap_setup).setVisibility(napping ? View.GONE : View.VISIBLE);
+        view.findViewById(R.id.nap_active).setVisibility(napping ? View.VISIBLE : View.GONE);
+        if (napping) {
+            ((TextView) view.findViewById(R.id.nap_until)).setText(DateFormat.getTimeFormat(activity).format(until));
+            ((TextView) view.findViewById(R.id.nap_left)).setText(length((int) ((until - now + 59_999) / 60_000)) + " to go, then a sunrise");
+            return;
+        }
+        ((TextView) view.findViewById(R.id.nap_length)).setText(length(napMinutes));
+        ((TextView) view.findViewById(R.id.nap_length_wake)).setText("Wakes at " + DateFormat.getTimeFormat(activity).format(now + napMinutes * 60_000L));
+        view.findViewById(R.id.nap_less).setAlpha(napMinutes > NAP_MIN ? 1f : 0.35f);
+        view.findViewById(R.id.nap_more).setAlpha(napMinutes < NAP_MAX ? 1f : 0.35f);
+        long wake = wakeTime();
+        ((TextView) view.findViewById(R.id.nap_wake_time)).setText(DateFormat.getTimeFormat(activity).format(wake) + "  ▾");
+        long ahead = wake - now;
+        ((TextView) view.findViewById(R.id.nap_wake_length)).setText(ahead > NAP_LONGEST ? "That's more than 12 hours away" : "Starts now · " + length((int) ((ahead + 59_999) / 60_000)));
+    }
+
+    /** 90 → "1 h 30 min". */
+    private static String length(int minutes) {
+        int hours = minutes / 60, rest = minutes % 60;
+        if (hours == 0) return rest + " min";
+        return rest == 0 ? hours + " h" : hours + " h " + rest + " min";
     }
 
     // --- Schedule: one colored card per period ---
@@ -393,7 +494,6 @@ final class SettingsScreen {
 
     private void bindLock() {
         view.findViewById(R.id.tile_lock).setOnClickListener(v -> { childLock = !childLock; tap(v); refreshLock(); });
-        ((TextView) view.findViewById(R.id.sample_words)).setText(UnlockChallenge.spell("5280"));
         refreshLock();
     }
 
@@ -407,7 +507,7 @@ final class SettingsScreen {
         ring.setStroke(dp(3), Color.WHITE);
         view.findViewById(R.id.mini_ring).setBackground(ring);
         ((TextView) view.findViewById(R.id.lock_summary)).setText(childLock
-                ? "On. To open settings, hold the top-right corner for 3 seconds, then type the code shown in words."
+                ? "On. To open settings, hold the top-right corner for 3 seconds, then type the code shown."
                 : "Off. Anyone can tap the screen to open settings.");
     }
 

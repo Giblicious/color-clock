@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Start a nap two ways (for a length of time, or until a wake-up time), or adjust one that's running. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/nap_setup"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- For a length of time, in half hours. -->
+        <LinearLayout
+            style="@style/Settings.Card"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1">
+
+            <TextView
+                style="@style/Settings.Title"
+                android:text="Nap for" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:gravity="center">
+
+                <TextView
+                    android:id="@+id/nap_less"
+                    android:layout_width="60dp"
+                    android:layout_height="60dp"
+                    android:background="@drawable/bg_key"
+                    android:contentDescription="30 minutes less"
+                    android:gravity="center"
+                    android:text="−"
+                    android:textColor="@color/text"
+                    android:textSize="30sp" />
+
+                <TextView
+                    android:id="@+id/nap_length"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif-medium"
+                    android:fontFeatureSettings="tnum"
+                    android:gravity="center"
+                    android:textColor="@color/text"
+                    android:textSize="34sp" />
+
+                <TextView
+                    android:id="@+id/nap_more"
+                    android:layout_width="60dp"
+                    android:layout_height="60dp"
+                    android:background="@drawable/bg_key"
+                    android:contentDescription="30 minutes more"
+                    android:gravity="center"
+                    android:text="+"
+                    android:textColor="@color/text"
+                    android:textSize="30sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/nap_length_wake"
+                style="@style/Settings.Body"
+                android:layout_width="match_parent"
+                android:layout_marginBottom="12dp"
+                android:gravity="center" />
+
+            <Button
+                android:id="@+id/nap_start_length"
+                style="@style/Settings.Button"
+                android:layout_width="match_parent"
+                android:background="@drawable/bg_button_primary"
+                android:text="Start nap" />
+        </LinearLayout>
+
+        <!-- Until a wake-up time; it starts now. -->
+        <LinearLayout
+            style="@style/Settings.Card"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1">
+
+            <TextView
+                style="@style/Settings.Title"
+                android:text="Wake up at" />
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <TextView
+                    android:id="@+id/nap_wake_time"
+                    android:layout_width="wrap_content"
+                    android:layout_height="60dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_button"
+                    android:fontFamily="sans-serif-medium"
+                    android:fontFeatureSettings="tnum"
+                    android:gravity="center"
+                    android:paddingStart="24dp"
+                    android:paddingEnd="24dp"
+                    android:textColor="@color/text"
+                    android:textSize="30sp" />
+            </FrameLayout>
+
+            <TextView
+                android:id="@+id/nap_wake_length"
+                style="@style/Settings.Body"
+                android:layout_width="match_parent"
+                android:layout_marginBottom="12dp"
+                android:gravity="center" />
+
+            <Button
+                android:id="@+id/nap_start_wake"
+                style="@style/Settings.Button"
+                android:layout_width="match_parent"
+                android:background="@drawable/bg_button_primary"
+                android:text="Start nap" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- A nap is running. -->
+    <LinearLayout
+        android:id="@+id/nap_active"
+        style="@style/Settings.Card"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <TextView
+            style="@style/Settings.Body"
+            android:text="Napping until"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/nap_until"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium"
+            android:fontFeatureSettings="tnum"
+            android:textColor="@color/text"
+            android:textSize="48sp" />
+
+        <TextView
+            android:id="@+id/nap_left"
+            style="@style/Settings.Body"
+            android:layout_marginTop="2dp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp">
+
+            <Button
+                android:id="@+id/nap_shorter"
+                style="@style/Settings.Button"
+                android:text="− 30 min" />
+
+            <Button
+                android:id="@+id/nap_longer"
+                style="@style/Settings.Button"
+                android:layout_marginStart="10dp"
+                android:text="+ 30 min" />
+
+            <Button
+                android:id="@+id/nap_end"
+                style="@style/Settings.Button"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_button_ghost"
+                android:text="End nap now"
+                android:textColor="@color/danger" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

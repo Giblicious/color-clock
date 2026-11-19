@@ -42,6 +42,33 @@
       </header>
 
       <div class="sheet-body">
+        <h2>Nap</h2>
+        <section id="nap-setup" class="card">
+          <div class="row">
+            <span>Nap for</span>
+            <span class="stepper">
+              <button id="nap-less" type="button" aria-label="30 minutes less">−</button>
+              <output id="nap-length"></output>
+              <button id="nap-more" type="button" aria-label="30 minutes more">+</button>
+            </span>
+          </div>
+          <div class="row"><span id="nap-length-wake" class="nap-note"></span><button id="nap-start-length" class="primary" type="button">Start nap</button></div>
+          <label class="row">Or wake up at <input id="nap-wake" type="time"></label>
+          <div class="row"><span id="nap-wake-length" class="nap-note"></span><button id="nap-start-wake" class="primary" type="button">Start nap</button></div>
+        </section>
+        <section id="nap-active" class="card" hidden>
+          <div class="nap-until">
+            <span class="nap-note">Napping until</span>
+            <strong id="nap-until"></strong>
+            <span id="nap-left" class="nap-note"></span>
+          </div>
+          <div class="button-grid nap-buttons">
+            <button id="nap-shorter" type="button">− 30 min</button>
+            <button id="nap-longer" type="button">+ 30 min</button>
+            <button id="nap-end" class="danger" type="button">End nap now</button>
+          </div>
+        </section>
+
         <h2>Schedule</h2>
         <div class="periods" role="tablist" aria-label="Period to edit">
           <button class="period" type="button" role="tab" data-period="day"><span class="period-name">Day</span><span class="period-time"></span><span class="period-label"></span></button>
